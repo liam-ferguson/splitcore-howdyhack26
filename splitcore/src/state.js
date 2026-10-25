@@ -1,7 +1,7 @@
 // Canonical bill state: one reducer, boundary validation, no derived money stored.
 
 import { MAX_CENTS, isValidCents } from './domain/money.js';
-import { emptyReceipt, SUMMARY_FIELDS } from './domain/receipt.js';
+import { emptyReceipt, SUMMARY_FIELDS, validateReceipt } from './domain/receipt.js';
 import { unitKey } from './domain/split.js';
 import { DEMO_DINERS } from './demo/receipts.js';
 
@@ -193,18 +193,32 @@ export function billReducer(bill, a) {
       return bill;
     }
 
-    case 'SET_PAID': return { ...bill, receipt: money(r, { finalPaidCents: isValidCents(a.cents) ? a.cents : null }) };
-    case 'CLASSIFY_EXTRA_TIP': {
-      if (r.finalPaidCents === null || r.receiptTotalCents === null || r.finalPaidCents < r.receiptTotalCents) return bill;
-      return { ...bill, receipt: money(r, { extraTipCents: r.finalPaidCents - r.receiptTotalCents }) };
+    // Paid = receipt total + tip you added. Entering the card total sets the tip automatically.
+    case 'SET_TIP': return { ...bill, receipt: { ...r, extraTipCents: isValidCents(a.cents) ? a.cents : 0, finalPaidCents: null } };
+    case 'SET_PAID': {
+      if (a.cents === null) return { ...bill, receipt: { ...r, extraTipCents: 0, finalPaidCents: null } };
+      const total = validateReceipt(r).total;
+      if (!isValidCents(a.cents) || a.cents < total) return bill;
+      return { ...bill, receipt: { ...r, extraTipCents: a.cents - total, finalPaidCents: null } };
     }
-    case 'CLEAR_EXTRA_TIP': return { ...bill, receipt: money(r, { extraTipCents: 0 }) };
-    case 'CONFIRM_PAID': {
-      const ok = r.finalPaidCents !== null && r.receiptTotalCents !== null && r.finalPaidCents === r.receiptTotalCents + r.extraTipCents;
-      return ok ? { ...bill, receipt: { ...r, paidConfirmed: true } } : bill;
-    }
+    case 'CLEAR_EXTRA_TIP': return { ...bill, receipt: { ...r, extraTipCents: 0 } };
+    case 'CLASSIFY_EXTRA_TIP': case 'CONFIRM_PAID': return bill; // no confirmation step any more
     case 'SET_CHARGE_BASIS': return { ...bill, receipt: { ...r, chargeBasis: a.basis === 'equalConfirmed' ? 'equalConfirmed' : 'food' } };
 
+    case 'QUICK_PEOPLE': {
+      // "How many people?" → You + Friend 2…n, no typing. Names can be edited later.
+      const n = Math.max(1, Math.min(MAX_DINERS, Number(a.count) | 0));
+      let next = bill;
+      const taken = new Set(bill.diners.map(d => d.name.toLowerCase()));
+      let k = 1;
+      while (next.diners.length < n) {
+        const name = next.diners.length === 0 && !taken.has('you') ? 'You' : `Friend ${++k}`;
+        if (taken.has(name.toLowerCase())) continue;
+        taken.add(name.toLowerCase());
+        next = billReducer(next, { type: 'ADD_DINER', name });
+      }
+      return next;
+    }
     case 'ADD_DINER': {
       const name = cleanName(a.name).slice(0, MAX_NAME);
       if (!name || bill.diners.length >= MAX_DINERS) return bill;

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildRequest, checkPayment, demoPayload, normalizePaypal, paypalLink, validateProviderUrl } from '../src/domain/requests.js';
+import { buildRequest, checkPayment, demoPayload, normalizePaypal, paypalLink, validateProviderUrl, venmoLink, cashAppLink } from '../src/domain/requests.js';
 import { matchMerchant, receiptDetails, DIRECTORY, findRewards, searchDirectory, VERIFIED_ON } from '../src/domain/rewards.js';
 import { parseReceipt } from '../src/domain/receipt.js';
 import { SAMPLE_A } from '../src/demo/receipts.js';
@@ -42,54 +42,54 @@ test('provider URL validation: allowlisted HTTPS hosts only, unchanged when vali
   for (const [url, p] of rejects) assert.equal(validateProviderUrl(url, /** @type {any} */ (p)).ok, false, url);
 });
 
-test('Venmo/Cash App: copy handle and amount; never synthesize amount links', () => {
-  const v = buildRequest({ person: jordan, payerName: 'Maya', merchant: 'Cafe', demo: false,
-    payment: { method: 'venmo', handle: 'maya-example', profileUrl: 'https://venmo.com/u/maya-example' } });
-  assert.equal(v.copyHandle, '@maya-example');
-  assert.equal(v.link?.href, 'https://venmo.com/u/maya-example');
-  assert.equal(v.link?.kind, 'recipient');
-  assert.equal(v.qrLabel, 'Recipient link; enter $9.11 in the payment app.');
-  assert.ok(!v.link.href.includes('9.11'));
-  const c = buildRequest({ person: jordan, payerName: 'Maya', merchant: 'Cafe', demo: false, payment: { method: 'cashapp', handle: '$MayaEx', profileUrl: '' } });
-  assert.equal(c.link, null);
-  assert.equal(c.qrPayload, null);
-  assert.match(c.message, /on Cash App \(\$MayaEx\)/);
-  const badUrl = checkPayment({ method: 'venmo', handle: 'maya-example', profileUrl: 'https://evil.com/x' });
-  assert.equal(badUrl.ok, true);
-  assert.equal(badUrl.url, null);
-  assert.ok(badUrl.urlError);
+test('Venmo links prefill amount and note; Cash App uses the documented $cashtag link', () => {
+  assert.equal(venmoLink('@maya-example', 911, 'Chick-fil-A split (SplitCore)'),
+    'https://venmo.com/maya-example?txn=pay&amount=9.11&note=Chick-fil-A%20split%20%28SplitCore%29');
+  assert.equal(venmoLink('maya-example', 0, 'x'), null);
+  assert.throws(() => venmoLink('bad user!', 100, 'x'));
+  assert.equal(cashAppLink('$MayaEx'), 'https://cash.app/$MayaEx');
+  assert.equal(cashAppLink('MayaEx'), 'https://cash.app/$MayaEx');
+  assert.throws(() => cashAppLink('12345')); // cashtags need a letter
+  const v = buildRequest({ person: jordan, payerName: 'Maya', merchant: 'Cafe', demo: false, payment: { method: 'venmo', handle: 'maya-example' } });
+  assert.equal(v.link?.href, 'https://venmo.com/maya-example?txn=pay&amount=9.11&note=Cafe%20split%20%28SplitCore%29');
+  assert.equal(v.link?.amountIncluded, true);
+  assert.equal(v.qrPayload, v.link?.href, 'the QR is the payment link');
+  assert.match(v.message, /Please send \$9\.11 to Maya on Venmo: https:\/\/venmo\.com\/maya-example\?txn=pay/);
+  const c = buildRequest({ person: jordan, payerName: 'Maya', merchant: 'Cafe', demo: false, payment: { method: 'cashapp', handle: '$MayaEx' } });
+  assert.equal(c.link?.href, 'https://cash.app/$MayaEx');
+  assert.equal(c.link?.amountIncluded, false);
+  assert.equal(c.copyHandle, '$MayaEx');
+  assert.equal(c.qrLabel, 'Scan to open $MayaEx on Cash App, then enter $9.11.');
+  const bad = buildRequest({ person: jordan, payerName: 'Maya', merchant: 'Cafe', demo: false, payment: { method: 'venmo', handle: 'x' } });
+  assert.equal(bad.link, null);
+  assert.ok(bad.paymentError);
+  assert.equal(checkPayment({ method: 'cashapp', handle: '$ok1' }).handle, '$ok1');
 });
 
 test('real PayPal request and reminder text', () => {
-  const r = buildRequest({ person: jordan, payerName: 'Maya', merchant: 'Chick-fil-A', demo: false, payment: { method: 'paypal', handle: 'SplitCoreExample', profileUrl: '' } });
+  const r = buildRequest({ person: jordan, payerName: 'Maya', merchant: 'Chick-fil-A', demo: false, payment: { method: 'paypal', handle: 'SplitCoreExample' } });
   assert.equal(r.link?.href, 'https://paypal.me/SplitCoreExample/9.11USD');
+  assert.equal(r.link?.label, 'Pay $9.11 with PayPal');
   assert.equal(r.qrPayload, 'https://paypal.me/SplitCoreExample/9.11USD');
   assert.equal(r.message, [
     'Hey Jordan! Your share at Chick-fil-A is $9.11. SANDWICH 2 of 2 $6.00, 1/3 of FRIES $1.60.',
     'Food after discounts $6.84; tax $0.57; service $0.34; extra tip $1.36.',
-    'Please send $9.11 to Maya via PayPal: https://paypal.me/SplitCoreExample/9.11USD. Thanks!',
+    'Please send $9.11 to Maya on PayPal: https://paypal.me/SplitCoreExample/9.11USD. Thanks!',
   ].join('\n'));
-  const none = buildRequest({ person: jordan, payerName: 'Maya', merchant: 'Cafe', demo: false, payment: { method: 'none', handle: '', profileUrl: '' } });
+  const none = buildRequest({ person: jordan, payerName: 'Maya', merchant: 'Cafe', demo: false, payment: { method: 'none', handle: '' } });
   assert.equal(none.link, null);
   assert.equal(none.qrPayload, null);
   assert.match(none.message, /Please send \$9\.11 to Maya\. Thanks!$/);
 });
 
-test('demo never returns an active financial link', () => {
-  for (const payment of [
-    { method: 'none', handle: '', profileUrl: '' },
-    { method: 'paypal', handle: 'SplitCoreExample', profileUrl: '' },
-    { method: 'venmo', handle: 'maya-example', profileUrl: 'https://venmo.com/u/maya-example' },
-  ]) {
-    const r = buildRequest({ person: jordan, payerName: 'Maya', merchant: 'Chick-fil-A', demo: true, payment });
-    assert.equal(r.link, null);
-    assert.equal(r.qrPayload, 'SPLITCORE DEMO | No payment | Jordan | USD 9.11 | Food 6.84 + tax 0.57 + service 0.34 + extra tip 1.36 | Sample only');
-    assert.equal(r.qrLabel, 'Demo QR — contains a sample breakdown, not a payment link.');
-    assert.ok(r.message.startsWith('DEMO — sample only; no payment requested.\n'));
-    assert.ok(!/https?:/.test(r.message));
-  }
-  const ex = buildRequest({ person: jordan, payerName: 'Maya', merchant: 'X', demo: true, payment: { method: 'paypal', handle: 'SplitCoreExample', profileUrl: '' } });
-  assert.equal(ex.formatExample, 'https://paypal.me/SplitCoreExample/9.11USD');
+test('demo: text QR without a handle; your own handle gives a real link', () => {
+  const plain = buildRequest({ person: jordan, payerName: 'Maya', merchant: 'Chick-fil-A', demo: true, payment: { method: 'none', handle: '' } });
+  assert.equal(plain.link, null);
+  assert.equal(plain.qrPayload, 'SPLITCORE DEMO | No payment | Jordan | USD 9.11 | Food 6.84 + tax 0.57 + service 0.34 + extra tip 1.36 | Sample only');
+  assert.equal(plain.qrLabel, 'Demo QR — contains a sample breakdown, not a payment link.');
+  assert.ok(plain.message.startsWith('DEMO — sample receipt.\n'));
+  const own = buildRequest({ person: jordan, payerName: 'Maya', merchant: 'Chick-fil-A', demo: true, payment: { method: 'paypal', handle: 'SplitCoreExample' } });
+  assert.equal(own.link?.href, 'https://paypal.me/SplitCoreExample/9.11USD');
 });
 
 test('demo payload format and zero balance', () => {

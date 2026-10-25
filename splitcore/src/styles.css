@@ -692,3 +692,22 @@ input[aria-invalid=true], select[aria-invalid=true] { border-color: var(--danger
   .scan-beam, .dz-beam { display: none; }
   .chip-on .chip-dot .icon path { stroke-dashoffset: 0; }
 }
+
+/* ---------- Seamless flow additions ---------- */
+.quick-people { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px; border-radius: var(--r); background: var(--grad-soft); border: 1px solid rgba(200, 255, 77, .25); }
+.quick-people .muted { flex: 1 0 100%; font-weight: 600; color: var(--text); }
+.quick-n { width: 52px; height: 52px; border-radius: 16px; border: 1px solid var(--line-2); background: rgba(255, 255, 255, .06); color: var(--text); font-size: 20px; font-weight: 800; cursor: pointer; transition: transform .25s var(--spring), background-color .2s, color .2s; }
+.quick-n:hover { background: var(--lime); color: var(--on-lime); transform: translateY(-3px) scale(1.05); }
+.optional { margin-left: 6px; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; letter-spacing: 0; vertical-align: middle; background: rgba(255, 255, 255, .07); color: var(--text-2); }
+.paid-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.paid-amount { margin: 2px 0; }
+.tip-fields { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); animation: rise .3s var(--ease) backwards; }
+.tip-quick { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.cc-line { display: flex; align-items: center; gap: 4px; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; min-width: 0; flex: 1 1 220px; }
+.cc-text { overflow-wrap: break-word; min-width: 0; }
+.corecheck.info { border-color: rgba(92, 225, 255, .25); }
+.pay-link { display: grid; gap: 6px; position: relative; z-index: 1; }
+.pay-link-btn { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 52px; padding: 0 18px; border-radius: 14px; text-decoration: none; font-weight: 750; font-size: 16px;
+  color: #08101C; background: var(--pc, var(--lime)); box-shadow: 0 10px 30px -12px color-mix(in srgb, var(--pc, var(--lime)) 80%, transparent); transition: transform .2s var(--spring), box-shadow .2s; }
+.pay-link-btn:hover { transform: translateY(-2px); box-shadow: 0 16px 36px -12px color-mix(in srgb, var(--pc, var(--lime)) 90%, transparent); }
+.pay-link-btn:active { transform: scale(.98); }

@@ -3,7 +3,7 @@
 
 import { fromDraft, toDraft } from '../state.js';
 
-const K = { prefs: 'splitcore:v1:prefs', names: 'splitcore:v1:names', draft: 'splitcore:v1:draft' };
+const K = { prefs: 'splitcore:v1:prefs', names: 'splitcore:v1:names', draft: 'splitcore:v1:draft', payment: 'splitcore:v1:payment' };
 const MAX_DRAFT_BYTES = 200_000;
 
 function read(key) {
@@ -31,15 +31,24 @@ function remove(key) {
   try { window.localStorage.removeItem(key); return true; } catch { return false; }
 }
 
-/** @returns {{rememberNames: boolean, rememberDraft: boolean}} */
+/** @returns {{rememberNames: boolean, rememberDraft: boolean, rememberPayment: boolean}} */
 export function loadPrefs() {
   const p = read(K.prefs);
-  return { rememberNames: p?.rememberNames === true, rememberDraft: p?.rememberDraft === true };
+  return { rememberNames: p?.rememberNames === true, rememberDraft: p?.rememberDraft === true, rememberPayment: p?.rememberPayment === true };
 }
 
 export function savePrefs(prefs) {
-  return write(K.prefs, { rememberNames: !!prefs.rememberNames, rememberDraft: !!prefs.rememberDraft });
+  return write(K.prefs, { rememberNames: !!prefs.rememberNames, rememberDraft: !!prefs.rememberDraft, rememberPayment: !!prefs.rememberPayment });
 }
+
+/** Opt-in: the payer's own payment method and handle (never anyone else's). */
+export function loadPayment() {
+  const v = read(K.payment);
+  if (!v || !['paypal', 'venmo', 'cashapp'].includes(v.method) || typeof v.handle !== 'string' || v.handle.length > 200) return null;
+  return { method: v.method, handle: v.handle, profileUrl: '' };
+}
+export function savePayment(payment) { return write(K.payment, { method: payment.method, handle: payment.handle }); }
+export function clearPayment() { return remove(K.payment); }
 
 /** @returns {string[]} */
 export function loadNames() {
@@ -67,5 +76,5 @@ export function clearDraft() { return remove(K.draft); }
 
 /** Remove only SplitCore's keys. */
 export function clearAll() {
-  return [K.prefs, K.names, K.draft].map(remove).every(Boolean);
+  return [K.prefs, K.names, K.draft, K.payment].map(remove).every(Boolean);
 }

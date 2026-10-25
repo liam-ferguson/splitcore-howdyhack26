@@ -20,7 +20,8 @@ function focusSoon(id) {
 
 export default function Claim({ bill, alloc, dispatch, demo, names, prefs, onPref, announce, onSettle, invalidCount, onViewReceipt, rewards, onRewardsDetails, onRewardsPick, sample }) {
   const r = bill.receipt;
-  const [chargesOpen, setChargesOpen] = useState(() => !alloc.check.arithmeticMatches || r.items.length === 0);
+  // Receipt details stay tucked away unless there's nothing to split yet (manual entry).
+  const [chargesOpen, setChargesOpen] = useState(() => r.items.length === 0);
   const [editing, setEditing] = useState(/** @type {Record<string, boolean>} */ ({}));
   const check = alloc.check;
   const diners = [...bill.diners].sort((a, b) => a.order - b.order);
@@ -34,12 +35,11 @@ export default function Claim({ bill, alloc, dispatch, demo, names, prefs, onPre
     } else if (field.startsWith('unit:')) focusSoon(`unit-${field.slice(5)}`);
     else if (field.startsWith('issue:')) focusSoon(`issue-${field.slice(6)}`);
     else if (field.startsWith('discount:')) { setChargesOpen(true); focusSoon(`disc-scope-${field.slice(9)}`); }
-    else if (field === 'paid') focusSoon('f-paid');
+    else if (field === 'paid') focusSoon('f-tip');
     else if (field === 'diners') focusSoon('f-add-diner');
     else if (field === 'payer') focusSoon(`payer-${diners[0]?.id}`);
     else if (field === 'items') { setChargesOpen(true); focusSoon('btn-add-item'); }
     else if (field === 'chargeBasis') focusSoon('btn-equal-charges');
-    else if (field === 'receiptTotalCents' && check.blocking.some(i => i.code === 'mismatch')) { setChargesOpen(true); focusSoon('f-taxCents'); }
     else if (field === 'discounts') { setChargesOpen(true); focusSoon('btn-add-discount'); }
     else { setChargesOpen(true); focusSoon(`f-${field}`); }
   };
@@ -52,35 +52,27 @@ export default function Claim({ bill, alloc, dispatch, demo, names, prefs, onPre
     <section className="claim" aria-labelledby="claim-title">
       <div className="workspace">
         <div className="main-col">
-          <h1 id="claim-title" className="screen-title reveal">Who had what?</h1>
+          <h1 id="claim-title" className="screen-title reveal">{diners.length ? 'Your split is ready' : 'Who’s splitting?'}</h1>
 
           <ReceiptHeader bill={bill} alloc={alloc} dispatch={dispatch} onViewReceipt={onViewReceipt} />
-          <div className="reveal" style={{ '--i': 1 }}>
-            <RewardsSpotlight result={rewards} merchant={r.merchant} sample={sample} onDetails={onRewardsDetails} onPick={onRewardsPick} compact />
-          </div>
 
           <People bill={bill} diners={diners} dispatch={dispatch} names={names} prefs={prefs} onPref={onPref} demo={demo} />
 
-          <CoreCheck check={check} receipt={r} onFix={fix} onToggle={() => setChargesOpen(o => !o)} open={chargesOpen} dispatch={dispatch} />
+          <TipPanel receipt={r} check={check} dispatch={dispatch} />
+
+          <ReceiptCheck check={check} receipt={r} onFix={fix} onToggle={() => setChargesOpen(o => !o)} open={chargesOpen} dispatch={dispatch} />
           {chargesOpen && <BillEditor receipt={r} dispatch={dispatch} check={check} />}
 
-          <PaidPanel receipt={r} check={check} dispatch={dispatch} onFixTotal={() => fix('receiptTotalCents')} />
-          {alloc.needsEqualCharges && (
-            <div className="notice notice-warning">
-              <Icon name="alert" />
-              <div>
-                <p>Food after discounts is {formatMoney(0)}, so tax, service and tip can’t be shared by food.</p>
-                <button id="btn-equal-charges" type="button" className="btn btn-secondary btn-small" onClick={() => dispatch({ type: 'SET_CHARGE_BASIS', basis: 'equalConfirmed' })}>Split remaining charges equally among all diners</button>
-              </div>
-            </div>
-          )}
+          <div className="reveal" style={{ '--i': 4 }}>
+            <RewardsSpotlight result={rewards} merchant={r.merchant} sample={sample} onDetails={onRewardsDetails} onPick={onRewardsPick} compact />
+          </div>
 
           <section className="items" aria-labelledby="items-title">
             <div className="section-head">
-              <h2 id="items-title">Claim your food</h2>
+              <h2 id="items-title">Who had what? <span className="optional">optional</span></h2>
               <p className="pill-stat" aria-live="polite">{progressText(alloc)}</p>
             </div>
-            {!diners.length && <p className="notice notice-plain"><Icon name="users" /> Add the people at the table first, then tap who had each item.</p>}
+            <p className="muted small">{diners.length ? 'Tap people on anything one person had. Everything you don’t tap is split evenly.' : 'Add people above — everything is split evenly until you tap who had what.'}</p>
             {r.items.map((item, i) => (
               <ItemCard key={item.id} index={i} item={item} bill={bill} diners={diners} alloc={alloc} dispatch={dispatch}
                 editing={!!editing[item.id]} setEditing={v => setEditing(e => ({ ...e, [item.id]: v }))} />
@@ -113,7 +105,7 @@ export default function Claim({ bill, alloc, dispatch, demo, names, prefs, onPre
           <p className="dock-status">{ready ? <><strong><AnimatedMoney cents={alloc.reimbursementCents} /></strong> to get back</> : reason}</p>
           <div className="dock-actions">
             {!ready && firstBlocker?.field && <button type="button" className="btn btn-secondary btn-small" onClick={() => fix(firstBlocker.field)}>Fix</button>}
-            <button type="button" className="btn btn-primary btn-small" disabled={!ready} onClick={onSettle}>Review split <Icon name="arrow" size={16} /></button>
+            <button type="button" className="btn btn-primary btn-small" disabled={!ready} onClick={onSettle}>Send requests <Icon name="arrow" size={16} /></button>
           </div>
         </div>
       </div>, document.body)}
@@ -125,7 +117,7 @@ function progressText(alloc) {
   const total = alloc.requiredUnits;
   if (!alloc.units.length) return 'No items yet';
   const left = total - alloc.claimedUnits;
-  return `${alloc.claimedUnits} of ${total} units claimed · ${left} remaining`;
+  return left ? `${alloc.claimedUnits} of ${total} tapped · ${left} split evenly` : `All ${total} tapped`;
 }
 
 function ReceiptHeader({ bill, alloc, dispatch, onViewReceipt }) {
@@ -166,7 +158,7 @@ function ReceiptHeader({ bill, alloc, dispatch, onViewReceipt }) {
       <div className="tag-row">
         <span className="tag">{sourceLabel}</span>
         {r.sampleDisclaimer && <span className="tag tag-warn">Fictional sample receipt</span>}
-        <span className={`tag ${alloc.check.arithmeticMatches ? 'tag-ok' : 'tag-warn'}`}>{alloc.check.arithmeticMatches ? 'Adds up' : 'Needs a look'}</span>
+        {alloc.check.arithmeticMatches && <span className="tag tag-ok"><Icon name="check" size={12} /> Adds up</span>}
         {(src.kind === 'image' || src.rawText) && <button type="button" className="btn-text btn-small" onClick={onViewReceipt}><Icon name="image" size={16} /> View source</button>}
       </div>
     </div>
@@ -195,6 +187,14 @@ function People({ bill, diners, dispatch, names, prefs, onPref, demo }) {
         <h2 id="people-title">Who’s at the table?</h2>
         <span className="pill-stat">{diners.length} {diners.length === 1 ? 'person' : 'people'}</span>
       </div>
+      {diners.length < 2 && (
+        <div className="quick-people" role="group" aria-label="How many people?">
+          <span className="muted small">How many people?</span>
+          {[2, 3, 4, 5, 6].map(n => (
+            <button key={n} type="button" className="quick-n" onClick={() => dispatch({ type: 'QUICK_PEOPLE', count: n })} aria-label={`${n} people`}>{n}</button>
+          ))}
+        </div>
+      )}
       {diners.length > 0 && (
         <ul className="people-list">
           {diners.map(d => (
@@ -211,7 +211,7 @@ function People({ bill, diners, dispatch, names, prefs, onPref, demo }) {
       <form className="add-diner" onSubmit={e => { e.preventDefault(); add(name); }}>
         <div className="field grow">
           <label htmlFor="f-add-diner" className="sr-only">Add a person</label>
-          <input id="f-add-diner" value={name} maxLength={40} autoComplete="off" placeholder={full ? 'Table is full' : 'Add a person'}
+          <input id="f-add-diner" value={name} maxLength={40} autoComplete="off" placeholder={full ? 'Table is full' : diners.length ? 'Add someone by name' : 'Or add names'}
             aria-invalid={!!error || undefined} aria-describedby={error ? 'diner-err' : undefined}
             onChange={e => { setName(e.target.value); setError(''); }} disabled={full} />
         </div>
@@ -282,62 +282,62 @@ function PersonDialog({ person, bill, diners, dispatch, onClose }) {
   );
 }
 
-function CoreCheck({ check, receipt, onFix, onToggle, open, dispatch }) {
-  const arithmetic = check.blocking.filter(i => !['unknown-line', 'duplicate-field'].includes(i.code));
-  const ok = check.arithmeticMatches && !check.blocking.length;
-  const notes = receipt.issues;
+function ReceiptCheck({ check, receipt, onFix, onToggle, open, dispatch }) {
+  const notes = [...receipt.issues, ...check.issues.filter(i => !receipt.issues.includes(i) && i.severity === 'info')];
+  const blocking = check.blocking;
+  const adj = check.adjustmentCents;
+  const status = blocking.length ? 'warn' : check.arithmeticMatches ? 'ok' : 'info';
+  const headline = blocking.length ? blocking[0].message
+    : check.arithmeticMatches ? (receipt.totalSource === 'manual' ? 'Your bill adds up' : 'Every line adds up to the printed total')
+    : receipt.receiptTotalCents === null ? `Total ${formatMoney(check.total)} (from the items)`
+    : `Using the printed total · ${formatMoney(Math.abs(adj))} difference shared fairly`;
   return (
-    <section className={`corecheck card reveal ${ok ? 'ok' : 'warn'}`} style={{ '--i': 3 }} aria-labelledby="cc-title">
+    <section className={`corecheck card reveal ${status}`} style={{ '--i': 3 }} aria-labelledby="cc-title">
       <div className="section-head">
-        <h2 id="cc-title"><span className={`status-dot ${ok ? 'ok' : 'warn'}`} aria-hidden="true" /> CoreCheck</h2>
-        <button type="button" className="btn-text btn-small" aria-expanded={open} onClick={onToggle}>{open ? 'Hide bill details' : 'Edit bill'}</button>
+        <h2 id="cc-title" className="cc-line"><span className={`status-dot ${status === 'ok' ? 'ok' : 'warn'}`} aria-hidden="true" /> <span className="cc-text">{headline}</span></h2>
+        <button type="button" className="btn-text btn-small" aria-expanded={open} onClick={onToggle}>{open ? 'Hide receipt details' : 'Receipt details'}</button>
       </div>
-      {ok ? (
-        <p className="status-ok"><Icon name="check" /> {receipt.totalSource === 'manual' ? 'Reviewed bill matches' : 'Amounts match'}</p>
-      ) : arithmetic.length > 0 && (
-        <ul className="issue-list">
-          {arithmetic.map(i => (
-            <li key={i.id} className="issue">
-              <Icon name="alert" />
-              <span>{i.message}</span>
-              {i.field && <button type="button" className="btn-text btn-small" onClick={() => onFix(i.field)}>Review</button>}
-            </li>
-          ))}
-        </ul>
+      {blocking.length > 0 && blocking[0].field && (
+        <button type="button" className="btn btn-secondary btn-small" onClick={() => onFix(blocking[0].field)}>Fix it</button>
       )}
-      {notes.length > 0 && (
-        <ul className="issue-list">
-          {notes.map(i => (
-            <li key={i.id} id={`issue-${i.id}`} tabIndex={-1} className={`issue ${i.severity === 'info' ? 'issue-info' : ''}`}>
-              <Icon name={i.severity === 'info' ? 'info' : 'alert'} />
-              <span>
-                {i.message}
-                {i.line && <code className="source-line">{i.line}</code>}
-              </span>
-              <span className="row-wrap">
-                {i.code === 'duplicate-field' && i.candidates.map((c, n) => (
-                  <button key={n} type="button" className="btn btn-secondary btn-small" onClick={() => dispatch({ type: 'RESOLVE_ISSUE', id: i.id, action: 'choose', cents: c.cents })}>Use {c.label}</button>
-                ))}
-                {i.code === 'unknown-line' && <button type="button" className="btn btn-secondary btn-small" onClick={() => dispatch({ type: 'RESOLVE_ISSUE', id: i.id, action: 'add-item' })}>Add as item</button>}
-                {i.code !== 'duplicate-field' && <button type="button" className="btn-text btn-small" onClick={() => dispatch({ type: 'RESOLVE_ISSUE', id: i.id, action: 'ignore' })}>{i.severity === 'info' ? 'Dismiss' : 'Exclude line'}</button>}
-              </span>
-            </li>
-          ))}
-        </ul>
+      {open && (
+        <>
+          <p className="arith">
+            <span>Items {formatMoney(check.G)}</span>
+            {check.I + check.B > 0 && <span>− savings {formatMoney(check.I + check.B)}</span>}
+            {check.T > 0 && <span>+ tax {formatMoney(check.T)}</span>}
+            {check.S > 0 && <span>+ service & fees {formatMoney(check.S)}</span>}
+            {check.P > 0 && <span>+ tip {formatMoney(check.P)}</span>}
+            {adj !== 0 && <span>{adj > 0 ? '+' : '−'} unread difference {formatMoney(Math.abs(adj))}</span>}
+            <span className="arith-eq">= {formatMoney(check.total)}</span>
+          </p>
+          {notes.length > 0 && (
+            <ul className="issue-list">
+              {notes.map(i => (
+                <li key={i.id} id={`issue-${i.id}`} tabIndex={-1} className="issue issue-info">
+                  <Icon name="info" />
+                  <span>
+                    {i.message}
+                    {i.line && <code className="source-line">{i.line}</code>}
+                  </span>
+                  <span className="row-wrap">
+                    {i.code === 'duplicate-field' && i.candidates.filter(c => c.cents !== i.chosen).map((c, n) => (
+                      <button key={n} type="button" className="btn btn-secondary btn-small" onClick={() => dispatch({ type: 'RESOLVE_ISSUE', id: i.id, action: 'choose', cents: c.cents })}>Use {c.label}</button>
+                    ))}
+                    {i.code === 'unknown-line' && <button type="button" className="btn btn-secondary btn-small" onClick={() => dispatch({ type: 'RESOLVE_ISSUE', id: i.id, action: 'add-item' })}>Add as item</button>}
+                    {receipt.issues.includes(i) && <button type="button" className="btn-text btn-small" onClick={() => dispatch({ type: 'RESOLVE_ISSUE', id: i.id, action: 'ignore' })}>Dismiss</button>}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <SavingsFound receipt={receipt} />
+        </>
       )}
-      <p className="arith">
-        <span>Items {formatMoney(check.G)}</span>
-        {check.I + check.B + check.U > 0 && <span>− savings {formatMoney(check.I + check.B + check.U)}</span>}
-        {check.T > 0 && <span>+ tax {formatMoney(check.T)}</span>}
-        {check.S > 0 && <span>+ service & fees {formatMoney(check.S)}</span>}
-        {check.P > 0 && <span>+ tip {formatMoney(check.P)}</span>}
-        <span className="arith-eq">= {formatMoney(check.expected)}</span>
-        {receipt.receiptTotalCents !== null && <span className="muted">receipt {formatMoney(receipt.receiptTotalCents)}</span>}
-      </p>
-      <SavingsFound receipt={receipt} />
     </section>
   );
 }
+
 
 function SavingsFound({ receipt }) {
   if (!receipt.discounts.length) return null;
@@ -409,46 +409,31 @@ function BillEditor({ receipt, dispatch, check }) {
   );
 }
 
-function PaidPanel({ receipt, check, dispatch, onFixTotal }) {
-  const p = check.paid;
-  const total = receipt.receiptTotalCents;
+function TipPanel({ receipt, check, dispatch }) {
+  const [open, setOpen] = useState(receipt.extraTipCents > 0);
   return (
-    <section className={`paid card reveal ${p.state === 'ok' ? 'ok' : ''}`} style={{ '--i': 4 }} aria-labelledby="paid-title">
-      <div className="section-head">
-        <h2 id="paid-title">What did you pay?</h2>
-        {p.state === 'ok' && <span className="tag tag-ok"><Icon name="check" size={14} /> Confirmed</span>}
+    <section className="paid card reveal" style={{ '--i': 2 }} aria-labelledby="paid-title">
+      <div className="paid-summary">
+        <div>
+          <p className="muted small" id="paid-title">Paid</p>
+          <p className="paid-amount"><AnimatedMoney cents={check.paidCents} className="amount-lg" /></p>
+          <p className="muted small">{receipt.extraTipCents > 0 ? `${formatMoney(check.total)} receipt + ${formatMoney(receipt.extraTipCents)} tip you added` : 'Receipt total'}</p>
+        </div>
+        {!open && <button type="button" className="btn btn-secondary btn-small" onClick={() => { setOpen(true); focusSoon('f-tip'); }}><Icon name="plus" size={16} /> Add a tip</button>}
       </div>
-      <div className="paid-row">
-        <MoneyField id="f-paid" label="Amount charged to your card or paid in cash" cents={receipt.finalPaidCents} allowEmpty placeholder={total !== null ? (total / 100).toFixed(2) : ''}
-          onCommit={c => dispatch({ type: 'SET_PAID', cents: c })} hint="Includes any tip you added." />
-        {total !== null && receipt.finalPaidCents === null && (
-          <button type="button" className="btn btn-secondary btn-small" onClick={() => dispatch({ type: 'SET_PAID', cents: total })}>Same as receipt ({formatMoney(total)})</button>
-        )}
-      </div>
-      {receipt.extraTipCents > 0 && (
-        <p className="tip-row"><Icon name="sparkle" size={16} /> Extra tip added after the receipt: <strong>{formatMoney(receipt.extraTipCents)}</strong>
-          <button type="button" className="btn-text btn-small" onClick={() => dispatch({ type: 'CLEAR_EXTRA_TIP' })}>Undo</button></p>
-      )}
-      {(p.state === 'more' || p.state === 'reclassify') && (
-        <div className="notice notice-warning">
-          <Icon name="alert" />
-          <div>
-            <p>You paid {formatMoney(p.delta)} more than the {formatMoney(/** @type {number} */ (total))} receipt total.</p>
-            <div className="row-wrap">
-              <button type="button" className="btn btn-primary btn-small" onClick={() => dispatch({ type: 'CLASSIFY_EXTRA_TIP' })}>The extra {formatMoney(p.delta)} was tip</button>
-              <button type="button" className="btn-text btn-small" onClick={onFixTotal}>Correct the receipt instead</button>
-            </div>
+      {open && (
+        <div className="tip-fields">
+          <MoneyField id="f-tip" label="Tip you added on the card" cents={receipt.extraTipCents || null} allowEmpty placeholder="0.00"
+            onCommit={c => dispatch({ type: 'SET_TIP', cents: c ?? 0 })} hint="Shared in proportion to what each person had." />
+          <div className="tip-quick" role="group" aria-label="Quick tip">
+            {[15, 18, 20].map(pct => {
+              const c = Math.round(check.total * pct / 100);
+              return <button key={pct} type="button" className="chip-btn chip-btn-sm" onClick={() => dispatch({ type: 'SET_TIP', cents: c })}>{pct}% · {formatMoney(c)}</button>;
+            })}
+            {receipt.extraTipCents > 0 && <button type="button" className="btn-text btn-small" onClick={() => dispatch({ type: 'SET_TIP', cents: 0 })}>No tip</button>}
           </div>
         </div>
       )}
-      {p.state === 'less' && (
-        <p className="notice notice-warning"><Icon name="alert" /> The paid amount is {formatMoney(p.delta)} below the receipt total. Check the total, or add a missing discount.</p>
-      )}
-      {p.state === 'unconfirmed' && (
-        <button type="button" className="btn btn-primary confirm-btn" onClick={() => dispatch({ type: 'CONFIRM_PAID' })}><Icon name="check" /> Confirm {formatMoney(/** @type {number} */ (receipt.finalPaidCents))} paid</button>
-      )}
-      {p.state === 'ok' && <p className="status-ok"><Icon name="check" /> {formatMoney(/** @type {number} */ (receipt.finalPaidCents))} paid, confirmed</p>}
-      {p.state === 'waiting' && <p className="muted small">Enter the receipt total first.</p>}
     </section>
   );
 }
@@ -542,7 +527,7 @@ function UnitClaim({ unit, item, diners, owners, dispatch }) {
     <li className={`unit ${owners.length || free ? '' : 'unit-open'}`}>
       <div className="unit-head">
         <span className="small unit-label">{label && <strong>{label}</strong>}{label && ' · '}{formatMoney(unit.grossCents)}{owners.length > 1 && <span className="split-pill">÷{owners.length}</span>}</span>
-        {!owners.length && (free ? <span className="tag">Free — claiming optional</span> : <span className="tag tag-warn">Needs owner</span>)}
+        {!owners.length && (free ? <span className="tag">Free</span> : <span className="tag">Split evenly</span>)}
       </div>
       <div className="owner-bar" aria-hidden="true">
         {ownerList.map(d => <span key={d.id} style={{ background: personColor(d.order) }} />)}
@@ -620,7 +605,7 @@ function Summary({ alloc, ready, reason, onSettle, onFix, canFix }) {
         </span>
         <div>
           <h2 className="h3">Your split</h2>
-          <p className="muted small">{ready ? 'Everything adds up.' : `${alloc.requiredUnits - alloc.claimedUnits} unit${alloc.requiredUnits - alloc.claimedUnits === 1 ? '' : 's'} left to claim`}</p>
+          <p className="muted small">{!ready ? 'Add people to see shares' : alloc.unclaimed.length ? `${alloc.unclaimed.length} untapped item${alloc.unclaimed.length === 1 ? '' : 's'} split evenly` : 'Everyone’s items are tapped'}</p>
         </div>
       </div>
       {ready && <p className="summary-hero"><AnimatedMoney cents={alloc.reimbursementCents} className="amount-xl" /> <span>to get back</span></p>}
@@ -633,16 +618,11 @@ function Summary({ alloc, ready, reason, onSettle, onFix, canFix }) {
             <AnimatedMoney cents={p.cents} className="amount-sm" />
           </li>
         ))}
-        {!ready && alloc.unclaimedFoodCents > 0 && <li className="muted"><span className="dot dot-empty" aria-hidden="true" /><span className="summary-name">Unclaimed food</span><span className="amount-sm">{formatMoney(alloc.unclaimedFoodCents)}</span></li>}
       </ul>
-      {!ready && <p className="muted small">Food so far, before discounts and charges. Final amounts appear when everything is claimed and checked.</p>}
-      {!ready && alloc.unclaimed.length > 0 && alloc.unclaimed.length <= 3 && (
-        <p className="small">Still unclaimed: {alloc.unclaimed.map(u => u.quantity > 1 ? `${u.name} ${u.index + 1} of ${u.quantity}` : u.name).join(', ')}</p>
-      )}
       {!ready && reason && <p className="summary-reason" id="settle-reason"><Icon name="alert" size={16} /> {reason}</p>}
       <div className="summary-actions">
-        <button type="button" className="btn btn-primary btn-block btn-lg" disabled={!ready} aria-describedby={!ready && reason ? 'settle-reason' : undefined} onClick={onSettle}>Review split <Icon name="arrow" /></button>
-        {!ready && canFix && <button type="button" className="btn btn-secondary btn-block" onClick={onFix}>Fix bill</button>}
+        <button type="button" className="btn btn-primary btn-block btn-lg" disabled={!ready} aria-describedby={!ready && reason ? 'settle-reason' : undefined} onClick={onSettle}>Send requests <Icon name="arrow" /></button>
+        {!ready && canFix && <button type="button" className="btn btn-secondary btn-block" onClick={onFix}>Fix it</button>}
       </div>
     </div>
   );

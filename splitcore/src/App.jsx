@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { appReducer, initialState } from './state.js';
-import { parseReceipt, emptyReceipt } from './domain/receipt.js';
+import { parseReceipt, emptyReceipt, validateReceipt } from './domain/receipt.js';
 import { allocateBill } from './domain/split.js';
 import { findRewards, getEntry } from './domain/rewards.js';
 import { scanImage, cancelScan, checkFile, OcrError, CancelledError, READ_FAILED } from './services/ocr.js';
@@ -66,8 +66,10 @@ export default function App() {
     const ok = storage.savePrefs(next);
     if (patch.rememberNames === false) storage.clearNames();
     if (patch.rememberDraft === false) { storage.clearDraft(); setDraftAvailable(false); }
+    if (patch.rememberPayment === false) storage.clearPayment();
+    if (patch.rememberPayment === true && bill.payment.method !== 'none') storage.savePayment(bill.payment);
     setPrefs({ ...next, saveFailed: !ok });
-    if (ok) toast(patch.rememberNames === true ? 'Names will be remembered on this device.' : patch.rememberDraft === true ? 'This bill will be kept as a local draft.' : 'Preference saved.', { tone: 'success' });
+    if (ok) toast(patch.rememberNames === true ? 'Names will be remembered on this device.' : patch.rememberDraft === true ? 'This bill will be kept as a local draft.' : patch.rememberPayment === true ? 'Your payment handle will be remembered on this device.' : 'Preference saved.', { tone: 'success' });
     else toast('This browser blocked local storage; SplitCore keeps working in memory.', { tone: 'warn' });
   };
   useEffect(() => {
@@ -80,6 +82,16 @@ export default function App() {
     const ok = storage.saveDraft(state.real);
     if (ok !== !prefs.saveFailed) setPrefs(p => ({ ...p, saveFailed: !ok }));
   }, [state.real, prefs.rememberDraft, demo]);
+
+  // Remembered payment handle (opt-in): fill it into any bill that has none, and keep it updated.
+  useEffect(() => {
+    if (!prefs.rememberPayment || bill.payment.method !== 'none') return;
+    const saved = storage.loadPayment();
+    if (saved) dispatch({ type: 'SET_PAYMENT', payment: saved });
+  }, [prefs.rememberPayment, mode, bill.source.loadId]);
+  useEffect(() => {
+    if (prefs.rememberPayment && bill.payment.method !== 'none') storage.savePayment(bill.payment);
+  }, [prefs.rememberPayment, bill.payment]);
 
   // ---- Invalid-field registry blocks settlement while text is unparseable ----
   const [invalid, setInvalid] = useState(/** @type {Set<string>} */ (new Set()));
@@ -141,6 +153,15 @@ export default function App() {
       const { text, ms } = await scanImage(img.blob, {
         rotation, grayscale,
         onProgress: ({ status: stage, progress }) => setScan(s => s.status === 'scanning' ? { ...s, stage, progress } : s),
+        // Score each OCR pass by the parsed result: a receipt that adds up wins immediately.
+        evaluate: t => {
+          const r = parseReceipt(t);
+          const v = validateReceipt(r);
+          const good = r.items.length > 0 && r.receiptTotalCents !== null && v.arithmeticMatches;
+          const unread = r.issues.filter(i => i.code === 'unknown-line').length;
+          const closeness = r.receiptTotalCents !== null ? Math.max(0, 500 - Math.min(500, Math.abs(v.adjustmentCents) / 10)) : 0;
+          return { good, score: (good ? 10000 : 0) + (r.receiptTotalCents !== null ? 1000 : 0) + closeness + r.items.length * 20 - unread * 10 };
+        },
       });
       if (stateRef.current.mode !== startedIn) return;
       const receipt = parseReceipt(text);
@@ -314,7 +335,7 @@ export default function App() {
                 onRewardsDetails={() => setDialog('rewards')} onRewardsPick={() => setDialog('picker')} />
             )}
             {step === 'settle' && (
-              <Settle bill={bill} alloc={alloc} dispatch={dispatch} demo={demo} announce={announce} sample={sample} rewards={rewards}
+              <Settle bill={bill} alloc={alloc} dispatch={dispatch} demo={demo} announce={announce} sample={sample} rewards={rewards} prefs={prefs} onPref={onPref}
                 onBack={() => go('claim')} onNewBill={newBill}
                 onRewardsDetails={() => setDialog('rewards')} onRewardsPick={() => setDialog('picker')} />
             )}
@@ -325,10 +346,10 @@ export default function App() {
 
       <footer className="footer">
         <p><Logo size={18} /> SplitCore prepares requests; it doesn’t process payments or submit rewards claims.</p>
-        {!demo && (prefs.rememberNames || prefs.rememberDraft) && (
+        {!demo && (prefs.rememberNames || prefs.rememberDraft || prefs.rememberPayment) && (
           <button type="button" className="btn-text btn-small" onClick={() => {
             const ok = storage.clearAll();
-            setPrefs({ rememberNames: false, rememberDraft: false, saveFailed: !ok }); setNames([]); setDraftAvailable(false);
+            setPrefs({ rememberNames: false, rememberDraft: false, rememberPayment: false, saveFailed: !ok }); setNames([]); setDraftAvailable(false);
             toast(ok ? 'SplitCore data cleared from this device.' : 'Local storage is unavailable.', { tone: ok ? 'success' : 'warn' });
           }}>Clear SplitCore data on this device</button>
         )}

@@ -6,7 +6,7 @@ import { RewardsSpotlight } from './Rewards.jsx';
 
 const prefersReduced = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
-export default function Settle({ bill, alloc, dispatch, demo, announce, onBack, onNewBill, rewards, onRewardsDetails, onRewardsPick, sample }) {
+export default function Settle({ bill, alloc, dispatch, demo, announce, onBack, onNewBill, rewards, onRewardsDetails, onRewardsPick, sample, prefs, onPref }) {
   const r = bill.receipt;
   const [qrFor, setQrFor] = useState(/** @type {string|null} */ (null));
   const [burst, setBurst] = useState(0);
@@ -55,7 +55,7 @@ export default function Settle({ bill, alloc, dispatch, demo, announce, onBack, 
 
       <div className="workspace">
         <div className="main-col">
-          <PaymentSettings bill={bill} dispatch={dispatch} demo={demo} payerName={payer.name} />
+          <PaymentSettings bill={bill} dispatch={dispatch} demo={demo} payerName={payer.name} prefs={prefs} onPref={onPref} />
           {alloc.others.length === 0 && <p className="notice notice-plain">Only {payer.name} is at the table, so nobody owes anything.</p>}
           <div className="request-grid">
             {alloc.others.map((p, i) => (
@@ -92,7 +92,7 @@ export default function Settle({ bill, alloc, dispatch, demo, announce, onBack, 
           <div className="qr-panel">
             <QrCode payload={qrReq.qrPayload} label={qrReq.qrLabel} />
             <p className="small break payload"><span className="muted">Contains:</span> <code>{qrReq.qrPayload}</code></p>
-            <CopyButton text={qrReq.qrPayload} label={demo ? 'Copy QR text' : 'Copy link'} announce={announce} />
+            <CopyButton text={qrReq.qrPayload} label={qrReq.link ? 'Copy pay link' : 'Copy QR text'} announce={announce} />
           </div>
         )}
       </Dialog>
@@ -102,19 +102,18 @@ export default function Settle({ bill, alloc, dispatch, demo, announce, onBack, 
 
 const METHODS = [['none', 'Just the amount', 'text'], ['paypal', 'PayPal.Me', 'wallet'], ['venmo', 'Venmo', 'wallet'], ['cashapp', 'Cash App', 'wallet']];
 
-function PaymentSettings({ bill, dispatch, demo, payerName }) {
+function PaymentSettings({ bill, dispatch, demo, payerName, prefs, onPref }) {
   const pay = bill.payment;
   const status = checkPayment(pay);
   const set = patch => dispatch({ type: 'SET_PAYMENT', payment: patch });
-  const handleLabel = { paypal: 'PayPal.Me name or link', venmo: 'Venmo username', cashapp: 'Cash App $cashtag' }[pay.method];
+  const handleLabel = { paypal: 'Your PayPal.Me name or link', venmo: 'Your Venmo username', cashapp: 'Your Cash App $cashtag' }[pay.method];
+  const placeholder = { paypal: 'e.g. MayaSmith', venmo: 'e.g. @maya-smith', cashapp: 'e.g. $MayaS' }[pay.method];
   return (
     <section className="card payment reveal" style={{ '--i': 1 }} aria-labelledby="pay-title">
       <div className="section-head">
-        <h2 id="pay-title">Payment request</h2>
-        <span className="muted small">Optional</span>
+        <h2 id="pay-title">How should people pay {payerName}?</h2>
       </div>
-      <p className="small muted">How should people pay {payerName}? SplitCore prepares the link or message; it never processes payments.</p>
-      {demo && <p className="notice notice-plain small"><Icon name="info" size={16} /> Demo mode: requests use sample QR codes and never open a payment app.</p>}
+      <p className="small muted">Add your handle once and every request gets a pay link and QR with the exact amount. SplitCore never handles the money.</p>
       <fieldset className="segmented">
         <legend className="sr-only">Payment method</legend>
         {METHODS.map(([id, label]) => (
@@ -128,28 +127,24 @@ function PaymentSettings({ bill, dispatch, demo, payerName }) {
         <div className="field-grid">
           <div className="field">
             <label htmlFor="f-pay-handle">{handleLabel}</label>
-            <input id="f-pay-handle" value={pay.handle} maxLength={200} autoComplete="off" spellCheck={false}
+            <input id="f-pay-handle" value={pay.handle} maxLength={200} autoComplete="off" spellCheck={false} placeholder={placeholder}
               aria-invalid={!!pay.handle && !status.ok || undefined} aria-describedby="pay-handle-msg"
               onChange={e => set({ handle: e.target.value })} />
             <p id="pay-handle-msg" className={pay.handle && !status.ok ? 'field-error' : 'field-hint'}>
               {pay.handle && !status.ok ? status.error
-                : status.ok && status.base ? `Requests will use ${status.base}${status.stripped ? ' (amount and extras from the pasted link removed)' : ''}. Checked for format only.`
-                : status.ok && status.handle ? `People will be asked to pay ${status.handle}. Checked for format only.`
-                : 'Checked for format only; SplitCore can’t confirm who owns it.'}
+                : pay.method === 'paypal' && status.ok ? `Links open ${status.base} with each person’s amount filled in.`
+                : pay.method === 'venmo' && status.ok ? `Links open Venmo’s pay screen to ${status.handle} with the amount and note filled in.`
+                : pay.method === 'cashapp' && status.ok ? `Links open ${status.handle} in Cash App; the amount is shown so they can type it.`
+                : 'Double-check the spelling — SplitCore can’t look up accounts.'}
             </p>
           </div>
-          {(pay.method === 'venmo' || pay.method === 'cashapp') && (
-            <div className="field">
-              <label htmlFor="f-pay-url">Your profile link (optional)</label>
-              <input id="f-pay-url" value={pay.profileUrl} maxLength={300} autoComplete="off" spellCheck={false} inputMode="url"
-                aria-invalid={!!status.urlError || undefined} aria-describedby="pay-url-msg"
-                onChange={e => set({ profileUrl: e.target.value })} />
-              <p id="pay-url-msg" className={status.urlError ? 'field-error' : 'field-hint'}>
-                {status.urlError ?? (status.url ? `Opens ${status.url} unchanged. People enter the amount in the app.` : 'Copied from the app. SplitCore never adds an amount to these links.')}
-              </p>
-            </div>
-          )}
         </div>
+      )}
+      {pay.method !== 'none' && status.ok && onPref && (
+        <label className="check">
+          <input type="checkbox" checked={!!prefs?.rememberPayment} onChange={e => onPref({ rememberPayment: e.target.checked })} />
+          Remember my {pay.method === 'paypal' ? 'PayPal' : pay.method === 'venmo' ? 'Venmo' : 'Cash App'} on this device
+        </label>
       )}
     </section>
   );
@@ -163,6 +158,7 @@ function Breakdown({ person }) {
     ['Food after discounts', person.netFoodCents, 'sub'],
     ['Tax', person.taxCents], ['Service & fees', person.serviceCents],
     ['Included tip', person.includedTipCents], ['Extra tip', person.extraTipCents],
+    ...(person.adjustmentCents ? [['Receipt adjustment (unread lines)', person.adjustmentCents]] : []),
   ];
   return (
     <table className="breakdown">
@@ -206,9 +202,9 @@ function DinerCard({ person, index, payerName, merchant, payment, demo, announce
       {person.totalCents > 0 && (
         <>
           <div className="row-wrap actions">
-            <CopyButton text={req.message} label="Copy reminder" announce={announce} className="btn btn-primary btn-small" />
+            <CopyButton text={req.message} label={req.link ? 'Copy request + link' : 'Copy request'} announce={announce} className="btn btn-primary btn-small" />
             {canShare && <button type="button" className="btn btn-secondary btn-small" onClick={share}><Icon name="share" size={16} /> Share</button>}
-            {req.qrPayload && <button type="button" className="btn btn-secondary btn-small" onClick={onQr}><Icon name="qr" size={16} /> {demo ? 'Demo QR' : 'QR code'}</button>}
+            {req.qrPayload && <button type="button" className="btn btn-secondary btn-small" onClick={onQr}><Icon name="qr" size={16} /> {req.link ? 'Pay QR' : 'Demo QR'}</button>}
           </div>
           {req.copyHandle && (
             <div className="row-wrap handle-row">
@@ -217,12 +213,14 @@ function DinerCard({ person, index, payerName, merchant, payment, demo, announce
             </div>
           )}
           {req.link && (
-            <p className="link-row">
-              <a className="btn btn-secondary btn-small" href={req.link.href} target="_blank" rel="noopener noreferrer">{req.link.label} <Icon name="external" size={15} /></a>
-              <span className="small muted break">{req.link.href}{req.link.kind === 'recipient' ? ` — enter ${req.amount} in ${req.link.provider}.` : ' — opens PayPal; nothing is paid until they confirm there.'}</span>
-            </p>
+            <div className="pay-link">
+              <a className="pay-link-btn" href={req.link.href} target="_blank" rel="noopener noreferrer" data-provider={req.link.provider}>
+                <Icon name="wallet" size={18} /> {req.link.label} <Icon name="external" size={15} />
+              </a>
+              <span className="small muted break">{req.link.amountIncluded ? `Opens ${req.link.provider} with ${req.amount} filled in — they just confirm.` : `Opens your Cash App page; they enter ${req.amount}.`}</span>
+            </div>
           )}
-          {req.formatExample && <p className="small muted break">Format example — recipient not validated: <code>{req.formatExample}</code></p>}
+          {!req.link && payment.method === 'none' && <p className="small muted">Add your PayPal, Venmo or Cash App above to include a pay link.</p>}
           {req.paymentError && payment.method !== 'none' && <p className="small muted">Payment link not added: {req.paymentError}</p>}
           <div className="row-wrap disclosure-row">
             <details className="disclosure">

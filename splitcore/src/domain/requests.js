@@ -94,15 +94,35 @@ export function checkPayment(payment) {
   }
   const h = method === 'venmo' ? normalizeVenmo(payment.handle) : normalizeCashtag(payment.handle);
   if (!h.ok) return { ok: false, method, error: h.error };
-  if (payment.profileUrl?.trim()) {
-    const v = validateProviderUrl(payment.profileUrl, method);
-    if (!v.ok) return { ok: true, method, handle: h.handle, url: null, urlError: v.error };
-    return { ok: true, method, handle: h.handle, url: v.url };
-  }
-  return { ok: true, method, handle: h.handle, url: null };
+  return { ok: true, method, handle: h.handle };
 }
 
-const PROVIDER_NAMES = { paypal: 'PayPal', venmo: 'Venmo', cashapp: 'Cash App' };
+/**
+ * Venmo payment link with the amount and note prefilled. venmo.com/{user}?txn=pay redirects to
+ * Venmo's own account.venmo.com/payment-link page (checked October 24, 2026); in the Venmo app it
+ * opens the pay screen. The payer still reviews and confirms inside Venmo.
+ * @param {string} handle "@user" or "user"
+ * @param {number} cents
+ * @param {string} note
+ */
+export function venmoLink(handle, cents, note) {
+  const user = String(handle).replace(/^@/, '');
+  if (!VENMO_USER.test(user)) throw new Error('Invalid Venmo username');
+  if (!Number.isSafeInteger(cents) || cents <= 0) return null;
+  const q = new URLSearchParams({ txn: 'pay', amount: centsToPlain(cents), note: note.slice(0, 120) });
+  return `https://venmo.com/${encodeURIComponent(user)}?${q.toString().replace(/\+/g, '%20')}`;
+}
+
+/**
+ * Cash App's documented payment link is cash.app/$cashtag (the amount is entered in Cash App;
+ * an amount in the URL is not documented, so none is added).
+ * @param {string} handle "$tag" or "tag"
+ */
+export function cashAppLink(handle) {
+  const tag = String(handle).replace(/^\$/, '');
+  if (!CASHTAG.test(tag)) throw new Error('Invalid cashtag');
+  return `https://cash.app/$${tag}`;
+}
 
 /** Short item summary for a person's message. */
 function itemSummary(person) {
@@ -114,7 +134,8 @@ function chargeParts(person) {
   return [
     ['tax', person.taxCents], ['service', person.serviceCents],
     ['included tip', person.includedTipCents], ['extra tip', person.extraTipCents],
-  ].filter(([, c]) => c > 0);
+    ['receipt adjustment', person.adjustmentCents ?? 0],
+  ].filter(([, c]) => c !== 0);
 }
 
 /**
@@ -127,42 +148,37 @@ export function demoPayload(person) {
 }
 
 /**
- * Everything the Settle card needs for one non-payer diner.
+ * Everything the Settle card needs for one non-payer diner. Links use the handle the payer
+ * entered (also in demo mode — it's their own account); without a handle, demo shows a text QR.
  * @param {{person: any, payerName: string, merchant: string, payment: any, demo: boolean}} args
  */
 export function buildRequest({ person, payerName, merchant, payment, demo }) {
   const total = person.totalCents;
   const amount = formatMoney(total);
   const pay = checkPayment(payment);
-  /** @type {{href: string, label: string, kind: 'paypal'|'recipient', provider: string}|null} */
+  const note = `${merchant || 'Dinner'} split (SplitCore)`;
+  /** @type {{href: string, label: string, provider: string, amountIncluded: boolean}|null} */
   let link = null;
-  let qrPayload = null, qrLabel = '', payInfo = '', copyHandle = '', formatExample = null;
+  let qrPayload = null, qrLabel = '', payInfo = '', copyHandle = '';
 
   if (total > 0 && pay.ok && pay.method !== 'none') {
     if (pay.method === 'paypal') {
       const href = /** @type {string} */ (paypalLink(pay.handle, total));
-      if (demo) formatExample = href;
-      else {
-        link = { href, label: `Open PayPal.Me request for ${amount}`, kind: 'paypal', provider: 'PayPal' };
-        qrPayload = href; qrLabel = `PayPal.Me link for ${amount} to ${pay.handle}.`;
-      }
-      payInfo = demo ? '' : `via PayPal: ${href}`;
-    } else {
+      link = { href, label: `Pay ${amount} with PayPal`, provider: 'PayPal', amountIncluded: true };
+    } else if (pay.method === 'venmo') {
+      const href = /** @type {string} */ (venmoLink(pay.handle, total, note));
+      link = { href, label: `Pay ${amount} on Venmo`, provider: 'Venmo', amountIncluded: true };
       copyHandle = pay.handle;
-      const provider = PROVIDER_NAMES[pay.method];
-      payInfo = `on ${provider} (${pay.handle})`;
-      if (pay.url && !demo) {
-        link = { href: pay.url, label: `Open ${provider} recipient link`, kind: 'recipient', provider };
-        qrPayload = pay.url; qrLabel = `Recipient link; enter ${amount} in the payment app.`;
-        payInfo += ` ${pay.url}`;
-      }
-      if (demo) payInfo = '';
+    } else {
+      link = { href: cashAppLink(pay.handle), label: `Pay ${pay.handle} on Cash App`, provider: 'Cash App', amountIncluded: false };
+      copyHandle = pay.handle;
     }
-  }
-  if (demo && total > 0) {
+    payInfo = `on ${link.provider}: ${link.href}`;
+    qrPayload = link.href;
+    qrLabel = link.amountIncluded ? `Scan to pay ${payerName} ${amount} on ${link.provider}.` : `Scan to open ${pay.handle} on Cash App, then enter ${amount}.`;
+  } else if (demo && total > 0) {
     qrPayload = demoPayload(person);
     qrLabel = 'Demo QR — contains a sample breakdown, not a payment link.';
-    link = null;
   }
 
   const charges = chargeParts(person).map(([l, c]) => `${l} ${formatMoney(c)}`);
@@ -172,6 +188,6 @@ export function buildRequest({ person, payerName, merchant, payment, demo }) {
     total > 0 ? `Please send ${amount} to ${payerName}${payInfo ? ` ${payInfo}` : ''}. Thanks!` : 'Nothing to send. Thanks!',
   ];
   let message = lines.join('\n');
-  if (demo) message = `DEMO — sample only; no payment requested.\n${message}`;
-  return { amount, link, qrPayload, qrLabel, message, copyHandle, formatExample, paymentError: pay.ok ? (pay.urlError ?? null) : pay.error };
+  if (demo) message = `DEMO — sample receipt.\n${message}`;
+  return { amount, link, qrPayload, qrLabel, message, copyHandle, paymentError: pay.ok ? null : pay.error };
 }

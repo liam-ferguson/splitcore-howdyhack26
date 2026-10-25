@@ -65,38 +65,6 @@ test('changing payer keeps allocations; reimbursement follows payer', () => {
   assert.deepEqual(res.others.map(p => p.name), ['Maya', 'Jordan']);
 });
 
-test('extra tip must be explicitly classified, once', () => {
-  const s = setup(SAMPLE_A);
-  s.claim(0, 0, 'Maya'); s.claim(0, 1, 'Jordan'); s.claim(1, 0, 'Sam'); s.claim(2, 0, 'Maya', 'Jordan', 'Sam'); s.claim(3, 0, 'Maya'); s.claim(3, 1, 'Sam');
-  s.run({ type: 'SET_PAID', cents: 3354 }, { type: 'CONFIRM_PAID' });
-  let res = allocateBill(s.b);
-  assert.equal(res.ready, false);
-  assert.ok(res.blockers.some(x => x.code === 'paid-more'));
-  s.run({ type: 'CLASSIFY_EXTRA_TIP' }, { type: 'CLASSIFY_EXTRA_TIP' }, { type: 'CONFIRM_PAID' });
-  res = allocateBill(s.b);
-  assert.equal(s.b.receipt.extraTipCents, 500);
-  assert.equal(res.ready, true);
-  assert.equal(res.finalPaidCents, 3354);
-});
-
-test('financial edits invalidate paid confirmation and remove readiness', () => {
-  const s = fixtureA();
-  s.run({ type: 'SET_CHARGE', field: 'taxCents', cents: 108 });
-  let res = allocateBill(s.b);
-  assert.equal(res.ready, false);
-  assert.equal(s.b.receipt.paidConfirmed, false);
-  assert.ok(res.blockers.some(x => x.code === 'mismatch'));
-  assert.equal(res.people, undefined);
-  s.run({ type: 'SET_CHARGE', field: 'taxCents', cents: 208 });
-  assert.equal(allocateBill(s.b).ready, false); // still needs reconfirmation
-  s.run({ type: 'CONFIRM_PAID' });
-  assert.equal(allocateBill(s.b).ready, true);
-  // Assignment/name edits do not clear confirmation.
-  s.run({ type: 'RENAME_DINER', id: s.id.Jordan, name: 'Jordy' });
-  assert.equal(s.b.receipt.paidConfirmed, true);
-  assert.equal(allocateBill(s.b).others[0].name, 'Jordy');
-});
-
 test('fixture B exact table with item discount', () => {
   const s = setup(SAMPLE_B);
   s.claim(0, 0, 'Maya'); s.claim(0, 1, 'Jordan'); s.claim(1, 0, 'Sam');
@@ -184,19 +152,6 @@ test('quantity edit invalidates only that line', () => {
   assert.equal(expandUnits(s.b.receipt).filter(u => u.itemId === sandwich).map(u => u.grossCents).join(), '400,400,400');
 });
 
-test('zero-owner unit blocks final requests and shows provisional food only', () => {
-  const s = setup(SAMPLE_A);
-  s.claim(0, 0, 'Maya'); s.claim(0, 1, 'Jordan');
-  s.pay(2854);
-  const res = allocateBill(s.b);
-  assert.equal(res.ready, false);
-  assert.equal(res.claimedUnits, 2);
-  assert.equal(res.units.length, 6);
-  assert.equal(res.unclaimedFoodCents, 800 + 480 + 320);
-  assert.deepEqual(res.provisional.map(p => p.foodCents), [600, 600, 0]);
-  assert.equal(res.people, undefined);
-});
-
 test('$0.00 units are optional to claim and never block', () => {
   const s = setup('CAFE\nBURGER 8.00\nWATER 0.00\nTOTAL 8.00', ['Maya', 'Jordan']);
   s.claim(0, 0, 'Jordan');
@@ -205,14 +160,6 @@ test('$0.00 units are optional to claim and never block', () => {
   assert.equal(res.ready, true, JSON.stringify(res.blockers));
   assert.equal(res.requiredUnits, 1);
   assert.deepEqual(table(res, 'totalCents'), { Maya: 0, Jordan: 800 });
-});
-
-test('a draft with an orphaned item discount restores with the same blocking issue', () => {
-  const s = setup(SAMPLE_B);
-  s.run({ type: 'DELETE_ITEM', id: s.b.receipt.items[0].id });
-  const back = fromDraft(JSON.parse(JSON.stringify(toDraft(s.b))));
-  assert.ok(back, 'draft restores');
-  assert.ok(allocateBill(back).blockers.some(b => b.code === 'discount-target'));
 });
 
 test('editing the merchant re-runs detection and clears a manual rewards choice', () => {
@@ -228,15 +175,6 @@ test('editing the merchant re-runs detection and clears a manual rewards choice'
   assert.equal(s.b.receipt.merchantEdited, false);
 });
 
-test('final paid below receipt requires correction', () => {
-  const s = setup(SAMPLE_C);
-  s.claim(0, 0, 'Maya');
-  s.pay(900);
-  const res = allocateBill(s.b);
-  assert.equal(res.ready, false);
-  assert.ok(res.blockers.some(x => x.code === 'paid-less'));
-});
-
 test('printed tip variant: only the later increment is extra tip', () => {
   const s = setup('CAFE\nBURGER 10.00\nTIP 2.00\nTOTAL 12.00', ['Maya', 'Jordan']);
   s.claim(0, 0, 'Maya', 'Jordan');
@@ -246,25 +184,6 @@ test('printed tip variant: only the later increment is extra tip', () => {
   assert.deepEqual(table(res, 'includedTipCents'), { Maya: 100, Jordan: 100 });
   assert.deepEqual(table(res, 'extraTipCents'), { Maya: 150, Jordan: 150 });
   assert.deepEqual(table(res, 'totalCents'), { Maya: 750, Jordan: 750 });
-});
-
-test('zero basis: all-zero bill and explicit equal-charge choice', () => {
-  const zero = setup('FREEBIE 5.00\nBILL DISCOUNT -5.00\nTOTAL 0.00', ['Maya', 'Jordan']);
-  zero.claim(0, 0, 'Maya'); zero.pay(0);
-  const z = allocateBill(zero.b);
-  assert.equal(z.ready, true);
-  assert.deepEqual(table(z, 'totalCents'), { Maya: 0, Jordan: 0 });
-  assert.equal(z.reimbursementCents, 0);
-
-  const s = setup('FREEBIE 5.00\nBILL DISCOUNT -5.00\nTAX 0.41\nTOTAL 0.41', ['Maya', 'Jordan', 'Sam']);
-  s.claim(0, 0, 'Maya'); s.pay(41);
-  let res = allocateBill(s.b);
-  assert.equal(res.ready, false);
-  assert.equal(res.needsEqualCharges, true);
-  s.run({ type: 'SET_CHARGE_BASIS', basis: 'equalConfirmed' });
-  res = allocateBill(s.b);
-  assert.equal(res.ready, true);
-  assert.deepEqual(table(res, 'totalCents'), { Maya: 14, Jordan: 14, Sam: 13 });
 });
 
 test('a diner with no food receives zero under proportional allocation', () => {
@@ -314,18 +233,15 @@ test('generated financially valid bills conserve every cent', () => {
   }
 });
 
-test('draft round-trip is sanitized and requires reconfirmation; corrupt data is rejected', () => {
+test('draft round-trip is sanitized and exact; corrupt data is rejected', () => {
   const s = fixtureA();
   const draft = JSON.parse(JSON.stringify(toDraft(s.b)));
   const text = JSON.stringify(draft);
   for (const secret of ['DEMO-101', 'DEMO-000', '10/24/2026', 'sourceLine', 'rawText', 'payment']) assert.ok(!text.includes(secret), secret);
   const back = fromDraft(draft);
   assert.ok(back);
-  assert.equal(back.receipt.paidConfirmed, false);
   assert.equal(back.restoredDraft, true);
-  assert.equal(allocateBill(back).ready, false);
-  const confirmed = billReducer(back, { type: 'CONFIRM_PAID' });
-  assert.deepEqual(allocateBill(confirmed).people.map(p => p.totalCents), [1102, 911, 1341]);
+  assert.deepEqual(allocateBill(back).people.map(p => p.totalCents), [1102, 911, 1341]);
   for (const bad of [null, 1, 'x', {}, { schemaVersion: 2 }, { ...draft, diners: 'no' },
     { ...draft, claims: { 'i1:0': ['ghost'] } }, { ...draft, receipt: { ...draft.receipt, taxCents: 1.5 } },
     { ...draft, receipt: { ...draft.receipt, items: [{ ...draft.receipt.items[0], quantity: 99 }] } }]) {
@@ -347,4 +263,94 @@ test('demo and real bills stay separate', () => {
   st = appReducer(st, { type: 'EXIT_DEMO' });
   assert.deepEqual(st.real.diners.map(d => d.name), ['Riley']);
   assert.equal(st.real.receipt.items[0].name, 'SHARED PLATE');
+});
+
+test('paid = receipt total; entering the card total sets the tip automatically', () => {
+  const s = setup(SAMPLE_A);
+  s.claim(0, 0, 'Maya'); s.claim(0, 1, 'Jordan'); s.claim(1, 0, 'Sam'); s.claim(2, 0, 'Maya', 'Jordan', 'Sam'); s.claim(3, 0, 'Maya'); s.claim(3, 1, 'Sam');
+  let res = allocateBill(s.b);
+  assert.equal(res.ready, true, 'no paid confirmation needed');
+  assert.equal(res.finalPaidCents, 2854);
+  s.run({ type: 'SET_PAID', cents: 3354 });
+  assert.equal(s.b.receipt.extraTipCents, 500);
+  s.run({ type: 'SET_PAID', cents: 3354 });
+  assert.equal(s.b.receipt.extraTipCents, 500, 'no duplication');
+  res = allocateBill(s.b);
+  assert.deepEqual(table(res, 'totalCents'), { Maya: 1102, Jordan: 911, Sam: 1341 });
+  s.run({ type: 'SET_PAID', cents: 2000 }); // below the receipt total: ignored
+  assert.equal(s.b.receipt.extraTipCents, 500);
+  s.run({ type: 'SET_TIP', cents: 0 });
+  assert.equal(allocateBill(s.b).finalPaidCents, 2854);
+});
+
+test('money edits update instantly; a mismatch is shared, never blocking', () => {
+  const s = fixtureA();
+  s.run({ type: 'SET_CHARGE', field: 'taxCents', cents: 108 });
+  const res = allocateBill(s.b);
+  assert.equal(res.ready, true);
+  assert.equal(res.check.adjustmentCents, 100);
+  assert.equal(res.people.reduce((t, p) => t + p.totalCents, 0), 3354, 'printed total + tip is still what gets split');
+  assert.equal(res.people.reduce((t, p) => t + p.adjustmentCents, 0), 100);
+  s.run({ type: 'SET_CHARGE', field: 'taxCents', cents: 208 });
+  assert.deepEqual(table(allocateBill(s.b), 'adjustmentCents'), { Maya: 0, Jordan: 0, Sam: 0 });
+  // Negative adjustment (lines read above the printed total) also conserves every cent.
+  s.run({ type: 'SET_CHARGE', field: 'taxCents', cents: 1208 });
+  const neg = allocateBill(s.b);
+  assert.equal(neg.ready, true);
+  assert.equal(neg.people.reduce((t, p) => t + p.totalCents, 0), 3354);
+  assert.ok(neg.people.every(p => p.totalCents >= 0));
+});
+
+test('untapped units are shared evenly by everyone', () => {
+  const s = setup(SAMPLE_A);
+  s.claim(0, 0, 'Maya'); s.claim(0, 1, 'Jordan');
+  const res = allocateBill(s.b);
+  assert.equal(res.ready, true);
+  assert.equal(res.claimedUnits, 2);
+  assert.equal(res.requiredUnits, 6);
+  assert.equal(res.unclaimedFoodCents, 800 + 480 + 320);
+  // Maya: 600 + 1/3 of 1600 shared food = 600 + 534 (penny ties by order) etc. — conserved exactly.
+  assert.equal(res.people.reduce((t, p) => t + p.totalCents, 0), 2854);
+  const fries = res.people.find(p => p.name === 'Sam').lines.find(l => l.label.includes('FRIES'));
+  assert.equal(fries.shared, true);
+  assert.equal(fries.label, '1/3 of FRIES');
+  // With no taps at all, it's an even split.
+  const even = setup(SAMPLE_C);
+  assert.deepEqual(table(allocateBill(even.b), 'totalCents'), { Maya: 334, Jordan: 334, Sam: 333 });
+});
+
+test('quick people: You + Friend 2…n, payer is You', () => {
+  let b = billReducer(newBill(), { type: 'LOAD_RECEIPT', receipt: parseReceipt(SAMPLE_C), kind: 'text' });
+  b = billReducer(b, { type: 'QUICK_PEOPLE', count: 4 });
+  assert.deepEqual(b.diners.map(d => d.name), ['You', 'Friend 2', 'Friend 3', 'Friend 4']);
+  assert.equal(b.payerId, b.diners[0].id);
+  b = billReducer(b, { type: 'QUICK_PEOPLE', count: 5 });
+  assert.deepEqual(b.diners.map(d => d.name), ['You', 'Friend 2', 'Friend 3', 'Friend 4', 'Friend 5']);
+  const res = allocateBill(b);
+  assert.equal(res.ready, true);
+  assert.equal(res.reimbursementCents, 1001 - res.payer.totalCents);
+});
+
+test('zero food: charges split equally automatically', () => {
+  const zero = setup('FREEBIE 5.00\nBILL DISCOUNT -5.00\nTOTAL 0.00', ['Maya', 'Jordan']);
+  zero.claim(0, 0, 'Maya');
+  const z = allocateBill(zero.b);
+  assert.deepEqual(table(z, 'totalCents'), { Maya: 0, Jordan: 0 });
+  assert.equal(z.reimbursementCents, 0);
+  const s = setup('FREEBIE 5.00\nBILL DISCOUNT -5.00\nTAX 0.41\nTOTAL 0.41', ['Maya', 'Jordan', 'Sam']);
+  s.claim(0, 0, 'Maya');
+  const res = allocateBill(s.b);
+  assert.equal(res.ready, true);
+  assert.equal(res.equalCharges, true);
+  assert.deepEqual(table(res, 'totalCents'), { Maya: 14, Jordan: 14, Sam: 13 });
+});
+
+test('a draft with an orphaned item discount restores and still splits', () => {
+  const s = setup(SAMPLE_B);
+  s.run({ type: 'DELETE_ITEM', id: s.b.receipt.items[0].id });
+  const back = fromDraft(JSON.parse(JSON.stringify(toDraft(s.b))));
+  assert.ok(back, 'draft restores');
+  const res = allocateBill(back);
+  assert.equal(res.ready, true);
+  assert.ok(res.check.issues.some(i => i.code === 'discount-target'));
 });

@@ -61,21 +61,28 @@ export function allocateBill(bill) {
   const { receipt, payerId, claims } = bill;
   const diners = [...bill.diners].sort((a, b) => a.order - b.order);
   const dinerOrder = new Map(diners.map(d => [d.id, d.order]));
+  const allIds = diners.map(d => d.id);
   const check = validateReceipt(receipt);
   const units = expandUnits(receipt);
 
-  /** @type {Record<string, {key: string, label: string, grossCents: number, discountCents: number, netCents: number, owners: number}[]>} */
+  /** @type {Record<string, {key: string, label: string, grossCents: number, discountCents: number, netCents: number, owners: number, shared: boolean}[]>} */
   const lines = Object.fromEntries(diners.map(d => [d.id, []]));
+  // Units nobody tapped are shared evenly by everyone at the table (no "assign everything" chore).
   const unclaimed = [];
   for (const u of units) {
-    const owners = ownersOf(claims, u.key, dinerOrder);
-    // A $0.00 unit (free drink, comped side) changes nobody's share, so claiming it is optional.
-    if (!owners.length) { if (u.grossCents > 0) unclaimed.push(u); continue; }
+    let owners = ownersOf(claims, u.key, dinerOrder);
+    const shared = owners.length === 0;
+    if (shared) {
+      if (u.grossCents > 0) unclaimed.push(u);
+      owners = allIds;
+    }
+    if (!owners.length) continue;
     const w = owners.map(id => ({ id, weight: 1, order: /** @type {number} */ (dinerOrder.get(id)) }));
     const g = apportion(u.grossCents, w);
     const n = apportion(u.netCents, w);
     for (const id of owners) {
-      lines[id].push({ key: u.key, label: shareLabel(u, owners.length), grossCents: g[id], discountCents: g[id] - n[id], netCents: n[id], owners: owners.length });
+      if (u.grossCents === 0 && shared) continue; // free, untapped: nothing to show
+      lines[id].push({ key: u.key, label: shareLabel(u, owners.length), grossCents: g[id], discountCents: g[id] - n[id], netCents: n[id], owners: owners.length, shared });
     }
   }
 
@@ -84,47 +91,30 @@ export function allocateBill(bill) {
     foodCents: lines[d.id].reduce((s, l) => s + l.grossCents, 0),
   }));
   const unclaimedFoodCents = unclaimed.reduce((s, u) => s + u.grossCents, 0);
+  const requiredUnits = units.filter(u => u.grossCents > 0).length;
 
   /** @type {{code: string, message: string, field?: string}[]} */
   const blockers = check.blocking.map(i => ({ code: i.code, message: i.message, field: i.field }));
   if (!diners.length) blockers.push({ code: 'no-diners', message: 'Add the people at the table.', field: 'diners' });
   else if (!payerId || !dinerOrder.has(payerId)) blockers.push({ code: 'no-payer', message: 'Choose who paid the bill.', field: 'payer' });
-  if (unclaimed.length) {
-    blockers.push({ code: 'unclaimed', message: `${unclaimed.length} ${unclaimed.length === 1 ? 'unit still needs' : 'units still need'} an owner.`, field: `unit:${unclaimed[0].key}` });
-  }
-  const paidMessages = {
-    missing: 'Enter the final amount you paid.',
-    more: `You paid ${formatMoney(check.paid.delta)} more than the receipt total. Mark it as tip or correct the receipt.`,
-    reclassify: 'The paid amount changed. Update the extra tip or correct the paid amount.',
-    less: `The paid amount is ${formatMoney(check.paid.delta)} below the receipt total. Check the total or add a missing discount.`,
-    unconfirmed: 'Confirm the final amount you paid.',
-  };
-  if (check.paid.state in paidMessages) blockers.push({ code: `paid-${check.paid.state}`, message: paidMessages[check.paid.state], field: 'paid' });
 
-  const requiredUnits = units.filter(u => u.grossCents > 0).length;
   const base = { check, units, unclaimed, unclaimedFoodCents, provisional, requiredUnits, claimedUnits: requiredUnits - unclaimed.length };
   if (blockers.length) return { ...base, ready: false, blockers, needsEqualCharges: false };
 
-  // Step 4: bill discounts proportional to food after item discounts.
+  // Bill discounts proportional to food after item discounts.
   const foodBefore = Object.fromEntries(diners.map(d => [d.id, lines[d.id].reduce((s, l) => s + l.netCents, 0)]));
-  const B = check.B;
-  const billDisc = apportion(B, diners.map(d => ({ id: d.id, weight: foodBefore[d.id], order: d.order })));
+  const billDisc = apportion(check.B, diners.map(d => ({ id: d.id, weight: foodBefore[d.id], order: d.order })));
   const netFood = Object.fromEntries(diners.map(d => [d.id, foodBefore[d.id] - billDisc[d.id]]));
 
-  // Step 5: each charge bucket independently, weights frozen at net food.
-  const buckets = { tax: receipt.taxCents, service: receipt.serviceCents, includedTip: receipt.includedTipCents, extraTip: receipt.extraTipCents };
-  const charges = Object.values(buckets).reduce((s, c) => s + c, 0);
+  // Each charge bucket independently, weights frozen at net food. If food is $0 (fully comped),
+  // charges are split equally — the only fair default with nothing to weigh by.
+  const adj = check.adjustmentCents;
+  const buckets = { tax: receipt.taxCents, service: receipt.serviceCents, includedTip: receipt.includedTipCents, extraTip: receipt.extraTipCents, adjustment: Math.abs(adj) };
   const foodSum = diners.reduce((s, d) => s + netFood[d.id], 0);
-  let equalCharges = false;
-  if (foodSum === 0 && charges > 0) {
-    if (receipt.chargeBasis !== 'equalConfirmed') {
-      return { ...base, ready: false, needsEqualCharges: true,
-        blockers: [{ code: 'zero-basis', message: 'Food after discounts is zero, so charges cannot be shared by food. Split remaining charges equally?', field: 'chargeBasis' }] };
-    }
-    equalCharges = true;
-  }
+  const equalCharges = foodSum === 0;
   const weights = diners.map(d => ({ id: d.id, weight: equalCharges ? 1 : netFood[d.id], order: d.order }));
   const alloc = Object.fromEntries(Object.entries(buckets).map(([k, total]) => [k, apportion(total, weights)]));
+  const sign = adj < 0 ? -1 : 1;
 
   const people = diners.map(d => {
     const gross = lines[d.id].reduce((s, l) => s + l.grossCents, 0);
@@ -136,22 +126,23 @@ export function allocateBill(bill) {
       foodBeforeBillCents: foodBefore[d.id], billDiscountCents: billDisc[d.id], netFoodCents: netFood[d.id],
       taxCents: alloc.tax[d.id], serviceCents: alloc.service[d.id],
       includedTipCents: alloc.includedTip[d.id], extraTipCents: alloc.extraTip[d.id],
+      adjustmentCents: sign * alloc.adjustment[d.id],
       totalCents: 0,
     };
-    p.totalCents = p.netFoodCents + p.taxCents + p.serviceCents + p.includedTipCents + p.extraTipCents;
+    p.totalCents = p.netFoodCents + p.taxCents + p.serviceCents + p.includedTipCents + p.extraTipCents + p.adjustmentCents;
     return p;
   });
 
   const sum = people.reduce((s, p) => s + p.totalCents, 0);
-  if (sum !== receipt.finalPaidCents) {
+  if (sum !== check.paidCents || people.some(p => p.totalCents < 0)) {
     return { ...base, ready: false, needsEqualCharges: false,
-      blockers: [{ code: 'internal', message: `Internal check failed: shares sum to ${formatMoney(sum)}, not the paid amount.` }] };
+      blockers: [{ code: 'internal', message: `The amounts on this receipt don’t add up to a valid split (${formatMoney(sum)} vs ${formatMoney(check.paidCents)}). Check the items in receipt details.`, field: 'receiptTotalCents' }] };
   }
   const payer = /** @type {typeof people[number]} */ (people.find(p => p.isPayer));
   return {
     ...base, ready: true, blockers: [], needsEqualCharges: false, equalCharges,
     people, payer,
-    finalPaidCents: /** @type {number} */ (receipt.finalPaidCents),
+    finalPaidCents: check.paidCents,
     reimbursementCents: sum - payer.totalCents,
     others: people.filter(p => !p.isPayer),
   };
