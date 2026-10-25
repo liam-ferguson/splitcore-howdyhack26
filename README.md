@@ -1,5 +1,7 @@
 # SplitCore
 
+Website: https://splitcore-howdyhack26.vercel.app/
+
 **You cover the bill. We handle the split.**
 
 SplitCore turns a photo of a restaurant receipt into exact, per-person payment requests. Snap the receipt, say how many people were there, and send everyone a pay link for their share, down to the cent. It runs entirely in the browser: no backend, no accounts, no API keys.
