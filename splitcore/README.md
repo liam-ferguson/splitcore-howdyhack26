@@ -152,19 +152,3 @@ fixtures/       QA images: changed-price C, renamed A, tax-typo A
 tests/          node:test suites (58 tests)
 scripts/browser-checks/  zero-dependency Chrome DevTools checks against the production preview
 ```
-
-## Before submitting to HowdyHack
-
-The 2026 Devpost page (`https://hh26.devpost.com/`) could not be read during planning. Before submitting, confirm these with the organizers or the official portal:
-
-- deadline and timezone
-- category wording
-- repository visibility
-- video length and hosting
-- judging criteria
-
-Disclose that the project was built with Claude Code, and list the libraries above. See `THIRD_PARTY_NOTICES.md`.
-
-## Recording the demo
-
-See `VERIFICATION.md` → "Recording quick path".
