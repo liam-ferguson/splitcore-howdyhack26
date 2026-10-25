@@ -23,6 +23,7 @@ for (const [w, h, label] of [[390, 844, 'mobile'], [320, 700, 'narrow320'], [640
     await sleep(100);
     await page.click('Same as receipt'); await page.click('Confirm');
     check(`${label}: Claim no horizontal scroll`, (await overflow()) <= 0, `${await overflow()}px`);
+    await sleep(1300); // let entrance animations (which scale cards) finish before measuring geometry
     const chip = await page.eval(`const b=document.querySelector('.chip'); return {aria: b.innerText, h: b.getBoundingClientRect().height}`);
     check(`${label}: long name chip keeps full text, >=44px`, chip.aria.includes(LONG) && chip.h >= 44, JSON.stringify(chip));
     await page.shot(`${S}/v-${label}-claim.png`);

@@ -23,6 +23,7 @@ test('fixture A fields', () => {
   assert.equal(r.receiptTotalCents, 2854);
   assert.equal(r.totalSource, 'ocr');
   assert.deepEqual(r.issues, []);
+  assert.deepEqual(r.headerLines, ['Chick-fil-A']);
   const v = validateReceipt(r);
   assert.equal(v.expected, 2854);
   assert.equal(v.arithmeticMatches, true);
@@ -113,9 +114,48 @@ test('duplicate and conflicting totals', () => {
   assert.equal(issue?.field, 'receiptTotalCents');
   assert.deepEqual(issue?.candidates?.map(c => c.cents), [1000, 1200]);
   assert.ok(codes(conflict).includes('duplicate-field'));
+  // Distinct labels are separate charges: added, with a visible non-blocking note.
   const twoTax = parseReceipt('BURGER 10.00\nSTATE TAX 0.50\nCITY TAX 0.25\nTOTAL 10.75');
-  const t = twoTax.issues.find(i => i.field === 'taxCents');
+  assert.equal(twoTax.taxCents, 75);
+  assert.ok(twoTax.issues.some(i => i.code === 'summed-lines' && i.severity === 'info'));
+  assert.deepEqual(codes(twoTax), []);
+  // The same label printed twice is ambiguous (duplicate print?) and needs a choice.
+  const sameTax = parseReceipt('BURGER 10.00\nTAX 0.50\nTAX 0.25\nTOTAL 10.75');
+  const t = sameTax.issues.find(i => i.field === 'taxCents');
+  assert.equal(t?.code, 'duplicate-field');
   assert.deepEqual(t?.candidates?.map(c => c.cents), [50, 25, 75]);
+});
+
+test('merchant detection skips boilerplate, addresses and phones', () => {
+  assert.equal(parseReceipt('WELCOME TO\nDOMINO\'S PIZZA\n123 MAIN ST\nPIZZA 10.00\nTOTAL 10.00').merchant, "DOMINO'S PIZZA");
+  assert.equal(parseReceipt('Welcome to Pizza Hut\nPIZZA 10.00\nTOTAL 10.00').merchant, 'Pizza Hut');
+  assert.equal(parseReceipt('1500 UNIVERSITY DR\n(979) 555-1234\nCOLLEGE STATION, TX 77840\nTHE PIZZA SHACK\nPIZZA 10.00\nTOTAL 10.00').merchant, 'THE PIZZA SHACK');
+  assert.equal(parseReceipt('CUSTOMER COPY\nGUEST CHECK\nPIZZA 10.00\nTOTAL 10.00').merchant, '');
+  const r = parseReceipt('ee\nCORNER PIZZA CO\nPIZZA 10.00\nTOTAL 10.00\nOrder online: www.cornerpizza.com\nEmail: hi@dominos.com');
+  assert.equal(r.merchant, 'CORNER PIZZA CO');
+  assert.deepEqual(r.domains, ['cornerpizza.com', 'dominos.com']);
+  assert.deepEqual(r.headerLines, ['ee', 'CORNER PIZZA CO']);
+});
+
+test('fees go to service & fees; distinct fee lines add up', () => {
+  const r = parseReceipt('PIZZA PLACE\n1 LARGE PIZZA 15.00\nDELIVERY FEE 3.99\nSERVICE FEE 1.00\nTAX 1.24\nTOTAL 21.23');
+  assert.equal(r.serviceCents, 499);
+  assert.deepEqual(items(r), [['LARGE PIZZA', 1, 1500]]);
+  assert.deepEqual(codes(r), []);
+  // An item merely containing the word SERVICE is still an item.
+  const item = parseReceipt('ROOM SERVICE BURGER 12.00\nTOTAL 12.00');
+  assert.deepEqual(items(item), [['ROOM SERVICE BURGER', 1, 1200]]);
+});
+
+test('lines after the total and $0 promos never block', () => {
+  const r = parseReceipt('CAFE\nBURGER 8.00\nREWARD FRIES 0.00\nTOTAL 8.00\nAMOUNT PAID 8.00\nVISA 8.00\nMYSTERY 2.00');
+  assert.deepEqual(items(r), [['BURGER', 1, 800]]);
+  assert.deepEqual(r.discounts, []);
+  assert.deepEqual(codes(r), []);
+  const after = r.issues.filter(i => i.code === 'unknown-line');
+  assert.deepEqual(after.map(i => [i.line, i.severity]), [['MYSTERY 2.00', 'info']]);
+  // Leading bullets and modifier markers are trimmed from names.
+  assert.deepEqual(items(parseReceipt('+ EXTRA CHEESE 1.00\nTOTAL 1.00')), [['EXTRA CHEESE', 1, 100]]);
 });
 
 test('excluded lines: metadata, tender, change, card, tax rate, suggested tips', () => {

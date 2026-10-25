@@ -69,7 +69,8 @@ export function allocateBill(bill) {
   const unclaimed = [];
   for (const u of units) {
     const owners = ownersOf(claims, u.key, dinerOrder);
-    if (!owners.length) { unclaimed.push(u); continue; }
+    // A $0.00 unit (free drink, comped side) changes nobody's share, so claiming it is optional.
+    if (!owners.length) { if (u.grossCents > 0) unclaimed.push(u); continue; }
     const w = owners.map(id => ({ id, weight: 1, order: /** @type {number} */ (dinerOrder.get(id)) }));
     const g = apportion(u.grossCents, w);
     const n = apportion(u.netCents, w);
@@ -79,7 +80,7 @@ export function allocateBill(bill) {
   }
 
   const provisional = diners.map(d => ({
-    id: d.id, name: d.name,
+    id: d.id, name: d.name, order: d.order,
     foodCents: lines[d.id].reduce((s, l) => s + l.grossCents, 0),
   }));
   const unclaimedFoodCents = unclaimed.reduce((s, u) => s + u.grossCents, 0);
@@ -100,7 +101,8 @@ export function allocateBill(bill) {
   };
   if (check.paid.state in paidMessages) blockers.push({ code: `paid-${check.paid.state}`, message: paidMessages[check.paid.state], field: 'paid' });
 
-  const base = { check, units, unclaimed, unclaimedFoodCents, provisional, claimedUnits: units.length - unclaimed.length };
+  const requiredUnits = units.filter(u => u.grossCents > 0).length;
+  const base = { check, units, unclaimed, unclaimedFoodCents, provisional, requiredUnits, claimedUnits: requiredUnits - unclaimed.length };
   if (blockers.length) return { ...base, ready: false, blockers, needsEqualCharges: false };
 
   // Step 4: bill discounts proportional to food after item discounts.

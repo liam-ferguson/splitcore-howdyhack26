@@ -2,14 +2,17 @@ import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } 
 import { appReducer, initialState } from './state.js';
 import { parseReceipt, emptyReceipt } from './domain/receipt.js';
 import { allocateBill } from './domain/split.js';
-import { matchMerchant } from './domain/rewards.js';
+import { findRewards, getEntry } from './domain/rewards.js';
 import { scanImage, cancelScan, checkFile, OcrError, CancelledError, READ_FAILED } from './services/ocr.js';
 import * as storage from './services/storage.js';
-import { BrandMark, Dialog, Icon, InvalidFields } from './components/ui.jsx';
+import { Dialog, ErrorBoundary, Icon, InvalidFields, Logo, Toasts } from './components/ui.jsx';
 import Snap from './components/Snap.jsx';
 import Claim from './components/Claim.jsx';
 import Settle from './components/Settle.jsx';
-import { PointsRescuePanel } from './components/Rewards.jsx';
+import { RestaurantPicker, RewardsPanel } from './components/Rewards.jsx';
+
+const IDLE_SCAN = { status: 'idle', stage: '', progress: null, error: '', fileName: '', canRetry: false, hasImage: false, lastText: '' };
+const STEPS = [['snap', 'Snap'], ['claim', 'Claim'], ['settle', 'Settle']];
 
 /** Raw text with lines marked by how the parser used them. */
 function SourceText({ bill }) {
@@ -33,14 +36,26 @@ function SourceText({ bill }) {
   );
 }
 
-const IDLE_SCAN ={ status: 'idle', stage: '', progress: null, error: '', fileName: '', canRetry: false, hasImage: false };
-
 export default function App() {
   const [state, dispatchApp] = useReducer(appReducer, undefined, () => initialState());
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const mode = state.mode;
   const demo = mode === 'demo';
   const bill = /** @type {import('./state.js').Bill} */ (state[mode]);
   const dispatch = useCallback(a => dispatchApp(a), []);
+
+  // ---- Toasts and polite announcements ----
+  const [toasts, setToasts] = useState(/** @type {any[]} */ ([]));
+  const toastSeq = useRef(0);
+  const dismissToast = useCallback(id => setToasts(t => t.filter(x => x.id !== id)), []);
+  const toast = useCallback((text, opts = {}) => {
+    const id = ++toastSeq.current;
+    setToasts(t => [...t.slice(-2), { id, text, ...opts }]);
+    setTimeout(() => dismissToast(id), opts.action ? 8000 : 4500);
+  }, [dismissToast]);
+  const [status, setStatus] = useState('');
+  const announce = useCallback(m => { setStatus(''); requestAnimationFrame(() => setStatus(m)); }, []);
 
   // ---- Preferences, reusable names, optional draft (all failure tolerant) ----
   const [prefs, setPrefs] = useState(() => ({ ...storage.loadPrefs(), saveFailed: false }));
@@ -49,10 +64,11 @@ export default function App() {
   const onPref = patch => {
     const next = { ...prefs, ...patch };
     const ok = storage.savePrefs(next);
-    if (patch.rememberNames === false) { storage.clearNames(); }
+    if (patch.rememberNames === false) storage.clearNames();
     if (patch.rememberDraft === false) { storage.clearDraft(); setDraftAvailable(false); }
     setPrefs({ ...next, saveFailed: !ok });
-    announce(ok ? 'Preference saved on this device.' : 'This browser blocked local storage; SplitCore keeps working in memory.');
+    if (ok) toast(patch.rememberNames === true ? 'Names will be remembered on this device.' : patch.rememberDraft === true ? 'This bill will be kept as a local draft.' : 'Preference saved.', { tone: 'success' });
+    else toast('This browser blocked local storage; SplitCore keeps working in memory.', { tone: 'warn' });
   };
   useEffect(() => {
     if (demo || !prefs.rememberNames) return;
@@ -65,10 +81,6 @@ export default function App() {
     if (ok !== !prefs.saveFailed) setPrefs(p => ({ ...p, saveFailed: !ok }));
   }, [state.real, prefs.rememberDraft, demo]);
 
-  // ---- Live status announcements (polite, explicit events only) ----
-  const [status, setStatus] = useState('');
-  const announce = useCallback(m => { setStatus(''); requestAnimationFrame(() => setStatus(m)); }, []);
-
   // ---- Invalid-field registry blocks settlement while text is unparseable ----
   const [invalid, setInvalid] = useState(/** @type {Set<string>} */ (new Set()));
   const registry = useMemo(() => ({
@@ -78,47 +90,69 @@ export default function App() {
     }),
   }), []);
 
+  // ---- Loading a new receipt: replace immediately, offer Undo (reads the LATEST state) ----
+  const loadReceipt = useCallback((payload, label) => {
+    const cur = stateRef.current;
+    const prev = cur[cur.mode];
+    const hadWork = prev && prev.source.kind !== 'none' && (prev.receipt.items.length > 0 || Object.keys(prev.claims).length > 0);
+    dispatchApp(payload);
+    window.scrollTo({ top: 0 });
+    if (hadWork) {
+      const snapshotMode = cur.mode;
+      // Undo returns to the previous bill's workspace, not the Snap screen it was replaced from.
+      const restored = { ...prev, step: 'claim' };
+      toast(label ?? 'Started a new bill.', { action: { label: 'Undo', run: () => { dispatchApp({ type: 'SET_BILL', mode: snapshotMode, bill: restored }); window.scrollTo({ top: 0 }); announce('Previous bill restored.'); } } });
+    } else if (label) {
+      toast(label, { tone: 'success' });
+    }
+  }, [toast, announce]);
+
   // ---- Scanning. Image stays in memory only. ----
   const [scan, setScan] = useState(IDLE_SCAN);
   const image = useRef(/** @type {{blob: Blob, url: string, name: string, rotation: number}|null} */ (null));
   const [imageUrl, setImageUrl] = useState('');
-  const scanMode = useRef(mode);
-  const [pending, setPending] = useState(/** @type {any} */ (null));
-
+  // Each bill keeps its own image URL (source.imageUrl) so "View source" and Undo always show the
+  // right picture. Old URLs are revoked once no bill and no scan references them (bounded list).
+  const urls = useRef(/** @type {string[]} */ ([]));
   const setImage = (blob, name) => {
-    if (image.current) URL.revokeObjectURL(image.current.url);
     const url = URL.createObjectURL(blob);
+    urls.current.push(url);
     image.current = { blob, url, name, rotation: 0 };
     setImageUrl(url);
+    while (urls.current.length > 6) {
+      const s = stateRef.current;
+      const live = new Set([s.real.source.imageUrl, s.demo?.source.imageUrl, image.current.url]);
+      const idx = urls.current.findIndex(u => !live.has(u));
+      if (idx < 0) break;
+      URL.revokeObjectURL(urls.current[idx]);
+      urls.current.splice(idx, 1);
+    }
   };
-  useEffect(() => () => { cancelScan(); if (image.current) URL.revokeObjectURL(image.current.url); }, []);
-
-  const deliver = (payload) => {
-    // Ask before replacing a bill that already has claims.
-    if (Object.keys(bill.claims).length) setPending(payload);
-    else dispatch(payload);
-  };
+  useEffect(() => () => { cancelScan(); urls.current.forEach(u => URL.revokeObjectURL(u)); }, []);
 
   const runScan = async ({ rotation = 0, grayscale = false } = {}) => {
     const img = image.current;
     if (!img) return;
-    scanMode.current = mode;
+    const startedIn = stateRef.current.mode;
     setScan({ ...IDLE_SCAN, status: 'scanning', stage: 'Preparing image', fileName: img.name, hasImage: true });
+    requestAnimationFrame(() => document.querySelector('.capture-wrap')?.scrollIntoView({
+      block: 'start', behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }));
     try {
       const { text, ms } = await scanImage(img.blob, {
         rotation, grayscale,
         onProgress: ({ status: stage, progress }) => setScan(s => s.status === 'scanning' ? { ...s, stage, progress } : s),
       });
-      if (scanMode.current !== modeRef.current) return;
+      if (stateRef.current.mode !== startedIn) return;
       const receipt = parseReceipt(text);
-      setScan({ ...IDLE_SCAN, hasImage: true, fileName: img.name });
       if (!receipt.items.length && receipt.receiptTotalCents === null) {
-        setScan({ ...IDLE_SCAN, status: 'error', error: READ_FAILED, canRetry: true, hasImage: true, fileName: img.name, lastText: text });
+        setScan({ ...IDLE_SCAN, status: 'error', error: READ_FAILED, canRetry: true, hasImage: true, fileName: img.name, lastText: text.trim() ? text : '' });
         announce(READ_FAILED);
         return;
       }
+      setScan({ ...IDLE_SCAN, hasImage: true, fileName: img.name });
       announce(`Receipt read in ${(ms / 1000).toFixed(1)} seconds. Check the amounts.`);
-      deliver({ type: 'LOAD_RECEIPT', receipt, kind: 'image', rawText: text, fileName: img.name });
+      loadReceipt({ type: 'LOAD_RECEIPT', receipt, kind: 'image', rawText: text, fileName: img.name, imageUrl: img.url },
+        `Read ${receipt.merchant || 'your receipt'} in ${(ms / 1000).toFixed(1)}s`);
     } catch (e) {
       if (e instanceof CancelledError) return;
       const msg = e instanceof OcrError ? e.message : READ_FAILED;
@@ -126,10 +160,9 @@ export default function App() {
       announce(msg);
     }
   };
-  const modeRef = useRef(mode);
-  modeRef.current = mode;
 
   const onFile = (file) => {
+    if (scan.status === 'scanning') return;
     try { checkFile(file); } catch (e) {
       setScan({ ...IDLE_SCAN, status: 'error', error: e.message, canRetry: false });
       announce(e.message);
@@ -156,52 +189,109 @@ export default function App() {
       setScan({ ...IDLE_SCAN, status: 'error', error: 'The sample image could not be loaded. Use sample text instead.' });
     }
   };
-  const onText = (text, sampleText = false) => {
+  const onText = (text, sampleText = false, kind = 'text') => {
     const receipt = parseReceipt(text);
-    deliver({ type: 'LOAD_RECEIPT', receipt, kind: 'text', rawText: text, sampleText });
-    announce(sampleText ? 'Sample text loaded. This skipped OCR.' : 'Text read. Check the amounts.');
+    setScan(s => ({ ...s, status: 'idle', error: '', lastText: '' }));
+    loadReceipt({ type: 'LOAD_RECEIPT', receipt, kind, rawText: text, sampleText,
+      fileName: kind === 'image' ? image.current?.name : '', imageUrl: kind === 'image' ? image.current?.url : '' },
+      sampleText ? 'Sample text loaded — this skipped OCR.' : 'Text read. Check the amounts.');
   };
-  const onManual = () => deliver({ type: 'LOAD_RECEIPT', receipt: emptyReceipt(), kind: 'manual' });
+  const onManual = () => loadReceipt({ type: 'LOAD_RECEIPT', receipt: emptyReceipt(), kind: 'manual' }, 'Blank bill ready. Add the items.');
 
-  const stopScan = () => { cancelScan(); setScan(IDLE_SCAN); if (image.current) { URL.revokeObjectURL(image.current.url); image.current = null; setImageUrl(''); } };
-  const enterDemo = () => { stopScan(); dispatchApp({ type: 'ENTER_DEMO' }); announce('Demo mode. Sample receipts only; no real payments.'); };
-  const exitDemo = () => { stopScan(); dispatchApp({ type: 'EXIT_DEMO' }); announce('Left demo mode. Your own bill is back.'); };
-  const resetDemo = () => { stopScan(); dispatchApp({ type: 'RESET_DEMO' }); setPending(null); announce('Demo reset.'); };
-  const newBill = () => { stopScan(); dispatchApp(demo ? { type: 'RESET_DEMO' } : { type: 'RESET_REAL' }); announce('Started a new bill.'); };
+  // Paste an image straight onto the Snap screen.
+  useEffect(() => {
+    if (bill.step !== 'snap') return;
+    const onPaste = e => {
+      const tag = /** @type {HTMLElement} */ (e.target)?.tagName;
+      if (tag === 'TEXTAREA' || tag === 'INPUT') return;
+      const file = [...(e.clipboardData?.files ?? [])].find(f => f.type.startsWith('image/'));
+      if (file) { e.preventDefault(); onFile(file); }
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  });
 
-  // ---- Derived money: recomputed on every change, never stored ----
+  const stopScan = () => { cancelScan(); setScan(IDLE_SCAN); };
+  const enterDemo = () => {
+    stopScan();
+    dispatchApp({ type: 'ENTER_DEMO' });
+    toast('Demo mode — sample receipts only, no real payments.');
+    // The "Try a sample" button disappears in demo mode; move focus to the samples instead of <body>.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const h = document.getElementById('samples-title');
+      if (!h) return;
+      h.focus({ preventScroll: true });
+      h.scrollIntoView({ block: 'start', behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    }));
+  };
+  const exitDemo = () => { stopScan(); dispatchApp({ type: 'EXIT_DEMO' }); toast('Left demo mode. Your own bill is back.'); };
+  const resetDemo = () => { stopScan(); dispatchApp({ type: 'RESET_DEMO' }); toast('Demo reset.'); };
+  const newBill = () => {
+    stopScan();
+    const cur = stateRef.current;
+    const prev = cur[cur.mode];
+    dispatchApp(cur.mode === 'demo' ? { type: 'RESET_DEMO' } : { type: 'RESET_REAL' });
+    window.scrollTo({ top: 0 });
+    toast('Started a new bill.', { action: { label: 'Undo', run: () => dispatchApp({ type: 'SET_BILL', mode: cur.mode, bill: prev }) } });
+  };
+  const restoreDraft = () => {
+    const d = storage.loadDraft();
+    if (!d) { setDraftAvailable(false); toast('The local draft could not be read.', { tone: 'warn' }); return; }
+    stopScan();
+    const cur = stateRef.current;
+    const prev = cur.real;
+    dispatchApp({ type: 'RESTORE_DRAFT', bill: d });
+    toast('Local draft restored. Confirm the paid amount again.', prev.receipt.items.length ? { action: { label: 'Undo', run: () => dispatchApp({ type: 'SET_BILL', mode: 'real', bill: prev }) } } : { tone: 'success' });
+  };
+
+  // ---- Derived money and rewards: recomputed on every change, never stored ----
   const alloc = useMemo(() => allocateBill(bill), [bill]);
+  const rewards = useMemo(() => findRewards(bill.receipt), [bill.receipt]);
   const sample = demo || bill.receipt.sampleDisclaimer;
-  const reward = useMemo(() => matchMerchant(bill.receipt.merchant), [bill.receipt.merchant]);
-  const [dialog, setDialog] = useState(/** @type {null|'source'|'rewards'} */ (null));
+  const [dialog, setDialog] = useState(/** @type {null|'source'|'rewards'|'picker'} */ (null));
+  const pickRestaurant = id => {
+    dispatch({ type: 'SET_REWARDS_CHOICE', choice: id });
+    setDialog(null);
+    const e = id === 'none' ? null : getEntry(id);
+    toast(e ? `Showing ${e.program}.` : 'Rewards lookup off for this bill.', { tone: 'success' });
+  };
 
   const step = bill.step;
   const go = s => { dispatch({ type: 'SET_STEP', step: s }); window.scrollTo({ top: 0 }); requestAnimationFrame(() => document.getElementById('main')?.focus({ preventScroll: true })); };
   const hasBill = bill.source.kind !== 'none';
+  const canSettle = alloc.ready && invalid.size === 0;
+  const stepIndex = STEPS.findIndex(([id]) => id === step);
 
   return (
     <InvalidFields.Provider value={registry}>
+      <div className="bg" aria-hidden="true"><span className="orb orb-a" /><span className="orb orb-b" /><span className="orb orb-c" /><span className="grid-sheen" /></div>
       <a href="#main" className="skip">Skip to content</a>
       <header className="topbar">
         <div className="topbar-inner">
-          <div className="wordmark"><BrandMark /><span>SplitCore</span>{demo && <span className="tag tag-demo">Demo</span>}</div>
-          <nav aria-label="Steps" className="steps">
+          <button type="button" className="wordmark" onClick={() => go('snap')} aria-label="SplitCore home">
+            <Logo /><span>SplitCore</span>{demo && <span className="tag tag-demo">Demo</span>}
+          </button>
+          <nav aria-label="Steps" className="steps" style={{ '--step': stepIndex }}>
+            <span className="steps-indicator" aria-hidden="true" />
             <ol>
-              {[['snap', 'Snap', true], ['claim', 'Claim', hasBill], ['settle', 'Settle', alloc.ready && invalid.size === 0]].map(([id, label, enabled], i) => (
-                <li key={id}>
-                  <button type="button" className={`step ${step === id ? 'step-on' : ''}`} aria-current={step === id ? 'step' : undefined}
-                    disabled={!enabled || step === id} onClick={() => go(id)}>
-                    <span className="step-num" aria-hidden="true">{i + 1}</span>{label}
-                  </button>
-                </li>
-              ))}
+              {STEPS.map(([id, label], i) => {
+                const enabled = id === 'snap' || (id === 'claim' && hasBill) || (id === 'settle' && canSettle);
+                return (
+                  <li key={id}>
+                    <button type="button" className={`step ${step === id ? 'step-on' : ''} ${i < stepIndex ? 'step-past' : ''}`} aria-current={step === id ? 'step' : undefined}
+                      disabled={!enabled || step === id} onClick={() => go(id)}>
+                      <span className="step-num" aria-hidden="true">{i < stepIndex ? <Icon name="check" size={12} /> : i + 1}</span>{label}
+                    </button>
+                  </li>
+                );
+              })}
             </ol>
           </nav>
         </div>
       </header>
       {demo && (
         <div className="demo-bar" role="region" aria-label="Demo mode">
-          <p><strong>Demo mode</strong> · fictional samples · no real payments or rewards claims</p>
+          <p><Icon name="sparkle" size={16} /> <strong>Demo mode</strong> · fictional samples · no real payments or rewards claims</p>
           <div className="row-wrap">
             <button type="button" className="btn-text btn-small" onClick={resetDemo}>Reset demo</button>
             <button type="button" className="btn-text btn-small" onClick={exitDemo}>Exit demo</button>
@@ -210,43 +300,45 @@ export default function App() {
       )}
 
       <main id="main" tabIndex={-1} className={`page page-${step}`}>
-        {step === 'snap' && (
-          <Snap scan={scan} demo={demo} hasBill={hasBill} draftAvailable={draftAvailable}
-            onFile={onFile} onRescan={onRescan} onCancel={onCancel} onText={onText} onManual={onManual}
-            onSampleImage={onSampleImage} onEnterDemo={enterDemo} onContinue={() => go('claim')}
-            onRestoreDraft={() => {
-              const d = storage.loadDraft();
-              if (d) { stopScan(); dispatchApp({ type: 'RESTORE_DRAFT', bill: d }); announce('Local draft restored. Confirm the paid amount again.'); }
-              else { setDraftAvailable(false); announce('The local draft could not be read.'); }
-            }} />
-        )}
-        {step === 'claim' && (
-          <Claim key={`${mode}-${bill.source.kind}-${bill.source.rawText.length}`} bill={bill} alloc={alloc} dispatch={dispatch} demo={demo} names={names} prefs={prefs}
-            onPref={onPref} announce={announce} onSettle={() => go('settle')} invalidCount={invalid.size}
-            onViewReceipt={() => setDialog('source')} onOpenRewards={() => setDialog('rewards')} sample={sample} />
-        )}
-        {step === 'settle' && (
-          <Settle bill={bill} alloc={alloc} dispatch={dispatch} demo={demo} announce={announce} sample={sample}
-            onBack={() => go('claim')} onNewBill={() => { newBill(); }} onOpenRewards={() => setDialog('rewards')} />
-        )}
-        {bill.restoredDraft && step !== 'snap' && <p className="draft-flag small muted">Local draft — restored from this device.</p>}
+        <ErrorBoundary key={`${mode}-${step}`}>
+          <div className="page-anim" key={`${mode}-${step}-${bill.source.loadId}`}>
+            {step === 'snap' && (
+              <Snap scan={scan} imageUrl={imageUrl} demo={demo} current={hasBill ? { merchant: bill.receipt.merchant } : null} draftAvailable={draftAvailable}
+                onFile={onFile} onRescan={onRescan} onCancel={onCancel} onText={onText} onManual={onManual}
+                onSampleImage={onSampleImage} onEnterDemo={enterDemo} onContinue={() => go('claim')} onRestoreDraft={restoreDraft} />
+            )}
+            {step === 'claim' && (
+              <Claim bill={bill} alloc={alloc} dispatch={dispatch} demo={demo} names={names} prefs={prefs}
+                onPref={onPref} announce={announce} onSettle={() => go('settle')} invalidCount={invalid.size}
+                onViewReceipt={() => setDialog('source')} rewards={rewards} sample={sample}
+                onRewardsDetails={() => setDialog('rewards')} onRewardsPick={() => setDialog('picker')} />
+            )}
+            {step === 'settle' && (
+              <Settle bill={bill} alloc={alloc} dispatch={dispatch} demo={demo} announce={announce} sample={sample} rewards={rewards}
+                onBack={() => go('claim')} onNewBill={newBill}
+                onRewardsDetails={() => setDialog('rewards')} onRewardsPick={() => setDialog('picker')} />
+            )}
+            {bill.restoredDraft && step !== 'snap' && <p className="draft-flag small muted">Local draft — restored from this device.</p>}
+          </div>
+        </ErrorBoundary>
       </main>
 
       <footer className="footer">
-        <p>SplitCore prepares requests; it doesn’t process payments or submit rewards claims.</p>
+        <p><Logo size={18} /> SplitCore prepares requests; it doesn’t process payments or submit rewards claims.</p>
         {!demo && (prefs.rememberNames || prefs.rememberDraft) && (
           <button type="button" className="btn-text btn-small" onClick={() => {
             const ok = storage.clearAll();
             setPrefs({ rememberNames: false, rememberDraft: false, saveFailed: !ok }); setNames([]); setDraftAvailable(false);
-            announce(ok ? 'SplitCore data cleared from this device.' : 'Local storage is unavailable.');
+            toast(ok ? 'SplitCore data cleared from this device.' : 'Local storage is unavailable.', { tone: ok ? 'success' : 'warn' });
           }}>Clear SplitCore data on this device</button>
         )}
       </footer>
 
+      <Toasts toasts={toasts} onDismiss={dismissToast} />
       <div className="sr-only" role="status" aria-live="polite">{status}</div>
 
-      <Dialog open={dialog === 'source'} onClose={() => setDialog(null)} title="Receipt source" wide>
-        {bill.source.kind === 'image' && imageUrl && <img className="source-img" src={imageUrl} alt="The receipt image you provided" />}
+      <Dialog open={dialog === 'source'} onClose={() => setDialog(null)} title="Receipt source" wide icon="receipt">
+        {bill.source.kind === 'image' && bill.source.imageUrl && <img className="source-img" src={bill.source.imageUrl} alt="The receipt image you provided" />}
         {bill.source.sampleText && <p className="notice notice-plain small">Sample text — this path skipped OCR.</p>}
         {bill.source.rawText && (
           <>
@@ -255,16 +347,10 @@ export default function App() {
           </>
         )}
       </Dialog>
-      <Dialog open={dialog === 'rewards' && !!reward} onClose={() => setDialog(null)} title={`Points Rescue · ${reward?.name ?? ''}`}>
-        {reward && <PointsRescuePanel entry={reward} receipt={bill.receipt} sample={sample} announce={announce} />}
+      <Dialog open={dialog === 'rewards' && !!rewards.entry} onClose={() => setDialog(null)} title={rewards.entry ? `${rewards.entry.name} rewards` : 'Rewards'} icon="gift">
+        {rewards.entry && <RewardsPanel entry={rewards.entry} receipt={bill.receipt} sample={sample} announce={announce} />}
       </Dialog>
-      <Dialog open={!!pending} onClose={() => setPending(null)} title="Replace the current bill?">
-        <p>This bill already has claims. Loading the new receipt clears them.</p>
-        <div className="row-wrap">
-          <button type="button" className="btn btn-primary" onClick={() => { dispatch(pending); setPending(null); }}>Replace bill</button>
-          <button type="button" className="btn btn-secondary" onClick={() => setPending(null)}>Keep current bill</button>
-        </div>
-      </Dialog>
+      <RestaurantPicker open={dialog === 'picker'} onClose={() => setDialog(null)} onPick={pickRestaurant} currentId={rewards.entry?.id} />
     </InvalidFields.Provider>
   );
 }

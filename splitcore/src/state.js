@@ -17,7 +17,7 @@ const uid = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID(
  * @typedef {{id: string, name: string, order: number}} Diner
  * @typedef {{
  *   schemaVersion: 1, mode: 'real'|'demo', step: 'snap'|'claim'|'settle',
- *   source: {kind: 'none'|'image'|'text'|'manual'|'draft', rawText: string, fileName: string, sampleText: boolean},
+ *   source: {kind: 'none'|'image'|'text'|'manual'|'draft', rawText: string, fileName: string, sampleText: boolean, loadId: number},
  *   receipt: Receipt, diners: Diner[], payerId: string|null,
  *   claims: Record<string, string[]>,
  *   payment: {method: 'none'|'paypal'|'venmo'|'cashapp', handle: string, profileUrl: string},
@@ -29,7 +29,7 @@ const uid = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID(
 export function newBill(mode = 'real') {
   return {
     schemaVersion: 1, mode, step: 'snap',
-    source: { kind: 'none', rawText: '', fileName: '', sampleText: false },
+    source: { kind: 'none', rawText: '', fileName: '', sampleText: false, loadId: 0, imageUrl: '' },
     receipt: emptyReceipt(), diners: [], payerId: null, claims: {},
     payment: { method: 'none', handle: '', profileUrl: '' },
     notices: {}, nextOrder: 0, restoredDraft: false,
@@ -83,11 +83,19 @@ export function billReducer(bill, a) {
     case 'LOAD_RECEIPT': {
       const receipt = { ...a.receipt, finalPaidCents: null, paidConfirmed: false, extraTipCents: 0 };
       return { ...bill, receipt, claims: {}, notices: {}, step: 'claim', restoredDraft: false,
-        source: { kind: a.kind, rawText: a.rawText ?? '', fileName: a.fileName ?? '', sampleText: !!a.sampleText } };
+        source: { kind: a.kind, rawText: a.rawText ?? '', fileName: a.fileName ?? '', sampleText: !!a.sampleText, loadId: (bill.source.loadId ?? 0) + 1,
+          imageUrl: typeof a.imageUrl === 'string' && a.imageUrl.startsWith('blob:') ? a.imageUrl : '' } };
     }
     case 'SET_STEP': return { ...bill, step: a.step };
-    case 'SET_MERCHANT': return { ...bill, receipt: { ...r, merchant: cleanName(a.merchant).slice(0, 60), merchantConfirmed: false } };
-    case 'CONFIRM_MERCHANT': return { ...bill, receipt: { ...r, merchantConfirmed: !!a.confirmed && !!r.merchant } };
+    case 'SET_MERCHANT': {
+      const merchant = cleanName(a.merchant).slice(0, 60);
+      if (merchant === r.merchant) return bill;
+      return { ...bill, receipt: { ...r, merchant, merchantEdited: true, rewardsChoice: null } };
+    }
+    case 'SET_REWARDS_CHOICE': {
+      const choice = a.choice === null || a.choice === 'none' || typeof a.choice === 'string' ? a.choice : null;
+      return { ...bill, receipt: { ...r, rewardsChoice: choice } };
+    }
 
     case 'ADD_ITEM': {
       if (r.items.length >= MAX_ITEMS) return bill;
@@ -255,6 +263,7 @@ export function appReducer(state, a) {
     case 'RESET_DEMO': return { ...state, mode: 'demo', demo: newDemoBill() };
     case 'RESET_REAL': return { ...state, real: newBill('real') };
     case 'RESTORE_DRAFT': return { ...state, mode: 'real', real: a.bill };
+    case 'SET_BILL': return a.mode === 'demo' || a.mode === 'real' ? { ...state, [a.mode]: a.bill } : state;
     default: {
       const key = state.mode;
       const bill = state[key] ?? newBill(key);
@@ -278,7 +287,7 @@ export function toDraft(bill) {
   return {
     schemaVersion: 1,
     receipt: {
-      merchant: r.merchant,
+      merchant: r.merchant, merchantEdited: r.merchantEdited, rewardsChoice: r.rewardsChoice,
       items: r.items.map(({ id, order, name, quantity, grossCents }) => ({ id, order, name, quantity, grossCents })),
       discounts: r.discounts.map(({ id, cents, scope, itemId, label }) => ({ id, cents, scope, itemId, label })),
       taxCents: r.taxCents, serviceCents: r.serviceCents, includedTipCents: r.includedTipCents,
@@ -315,8 +324,10 @@ export function fromDraft(raw) {
     if (gross > MAX_CENTS) return null;
     const discounts = x.discounts.map(dd => {
       if (!isStr(dd.id, 80) || !isValidCents(dd.cents) || !['bill', 'item', 'unresolved'].includes(dd.scope)) throw 0;
-      if (dd.scope === 'item' && !itemIds.has(dd.itemId)) throw 0;
-      return { id: dd.id, cents: dd.cents, scope: dd.scope, itemId: dd.scope === 'item' ? dd.itemId : null, label: isStr(dd.label, 80) ? dd.label : 'Discount', sourceLine: '' };
+      // An item discount whose item was deleted stays an item discount with no target, so the
+      // restored bill shows the same "choose what this applies to" issue instead of being rejected.
+      const itemId = dd.scope === 'item' && itemIds.has(dd.itemId) ? dd.itemId : null;
+      return { id: dd.id, cents: dd.cents, scope: dd.scope, itemId, label: isStr(dd.label, 80) ? dd.label : 'Discount', sourceLine: '' };
     });
     for (const f of ['taxCents', 'serviceCents', 'includedTipCents', 'extraTipCents']) if (!isValidCents(x[f])) return null;
     for (const f of ['printedSubtotalCents', 'receiptTotalCents', 'finalPaidCents']) if (x[f] !== null && !isValidCents(x[f])) return null;
@@ -337,6 +348,8 @@ export function fromDraft(raw) {
     const receipt = {
       ...emptyReceipt(),
       merchant: isStr(x.merchant, 60) ? x.merchant : '',
+      merchantEdited: x.merchantEdited === true,
+      rewardsChoice: x.rewardsChoice === 'none' || (isStr(x.rewardsChoice, 40) && /^[a-z]+$/.test(x.rewardsChoice)) ? x.rewardsChoice : null,
       items, discounts,
       taxCents: x.taxCents, serviceCents: x.serviceCents, includedTipCents: x.includedTipCents,
       listed: { tax: x.taxCents > 0, service: x.serviceCents > 0, tip: x.includedTipCents > 0 },
@@ -351,7 +364,7 @@ export function fromDraft(raw) {
       payerId: dinerIds.has(d.payerId) ? d.payerId : null,
       claims: pruneClaims(claims, receipt, diners),
       nextOrder: Math.max(-1, ...diners.map(p => p.order)) + 1,
-      source: { kind: 'draft', rawText: '', fileName: '', sampleText: false },
+      source: { kind: 'draft', rawText: '', fileName: '', sampleText: false, loadId: 1, imageUrl: '' },
       restoredDraft: true,
     };
   } catch {

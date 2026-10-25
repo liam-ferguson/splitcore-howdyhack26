@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildRequest, checkPayment, demoPayload, normalizePaypal, paypalLink, validateProviderUrl } from '../src/domain/requests.js';
-import { matchMerchant, receiptDetails, DIRECTORY } from '../src/domain/rewards.js';
+import { matchMerchant, receiptDetails, DIRECTORY, findRewards, searchDirectory, VERIFIED_ON } from '../src/domain/rewards.js';
 import { parseReceipt } from '../src/domain/receipt.js';
 import { SAMPLE_A } from '../src/demo/receipts.js';
 
@@ -101,18 +101,52 @@ test('demo payload format and zero balance', () => {
   assert.equal(buildRequest({ person: zero, payerName: 'Maya', merchant: 'X', demo: true, payment: { method: 'none' } }).qrPayload, null);
 });
 
-test('Points Rescue matching: header names only, full alias', () => {
-  assert.equal(matchMerchant('Chick-fil-A')?.id, 'chickfila');
-  assert.equal(matchMerchant('CHICK-FIL-A #01234')?.id, 'chickfila');
-  assert.equal(matchMerchant("McDonald's")?.id, 'mcdonalds');
-  assert.equal(matchMerchant('Wendy’s')?.id, 'wendys');
-  assert.equal(matchMerchant('Wendy burger'), null);
-  assert.equal(matchMerchant('SPLITCORE CAFE'), null);
-  assert.equal(matchMerchant(''), null);
-  for (const e of DIRECTORY) {
-    assert.equal(e.verifiedOn, '2026-10-24');
-    for (const l of e.links) assert.match(l.href, /^https:\/\/www\.(chick-fil-a|mcdonalds|wendys)\.com\//);
+test('restaurant matching: whole names only, never partial words', () => {
+  const cases = {
+    'Chick-fil-A': 'chickfila', 'CHICK-FIL-A #01234': 'chickfila', 'CHICK FIL A': 'chickfila', "McDonald's": 'mcdonalds',
+    'Wendy’s': 'wendys', "DOMINO'S PIZZA #4421": 'dominos', 'Pizza Hut Express': 'pizzahut', 'PAPA JOHNS': 'papajohns',
+    'Raising Cane’s Chicken Fingers': 'canes', 'Noodles & Company': 'noodles', 'Taco Bell #031': 'tacobell',
+    'WHATABURGER #1027': 'whataburger', 'DQ GRILL & CHILL': 'dq', 'Jersey Mike’s Subs': 'jerseymikes', 'Torchy’s Tacos': 'torchys',
+  };
+  for (const [text, id] of Object.entries(cases)) assert.equal(matchMerchant(text)?.id, id, text);
+  for (const text of ['Wendy burger', 'SPLITCORE CAFE', 'THE PIZZA SHACK', 'PENNY DINER', 'DQUICK MART', 'Starbuck Lane Diner', '']) {
+    assert.equal(matchMerchant(text), null, text);
   }
+});
+
+test('findRewards uses merchant, header, then printed website — never item lines', () => {
+  const pizza = parseReceipt('THE PIZZA SHACK\n1 PIZZA HUT STYLE CRUST 12.00\n1 WENDYS FRIES 3.00\nTOTAL 15.00');
+  assert.deepEqual(findRewards(pizza), { entry: null, via: 'none', evidence: '' });
+  const header = parseReceipt('WELCOME\nDOMINOS\nSTORE 8812\nPIZZA 10.00\nTOTAL 10.00');
+  assert.equal(findRewards(header).entry?.id, 'dominos');
+  const site = parseReceipt('STORE 1234\nPIZZA 10.00\nTOTAL 10.00\nOrder at www.papajohns.com');
+  assert.deepEqual([findRewards(site).entry?.id, findRewards(site).via, findRewards(site).evidence], ['papajohns', 'website', 'papajohns.com']);
+  const a = parseReceipt(SAMPLE_A);
+  assert.equal(findRewards(a).entry?.id, 'chickfila');
+  assert.equal(findRewards(a).via, 'name');
+  // The user's own choices win, including "none".
+  assert.equal(findRewards({ ...a, rewardsChoice: 'none' }).entry, null);
+  assert.equal(findRewards({ ...a, rewardsChoice: 'starbucks' }).entry?.id, 'starbucks');
+  // An edited merchant name is the only evidence used.
+  assert.equal(findRewards({ ...site, merchant: 'Corner Cafe', merchantEdited: true }).entry, null);
+  assert.equal(findRewards({ ...site, merchant: 'Pizza Hut', merchantEdited: true }).entry?.id, 'pizzahut');
+});
+
+test('rewards directory entries are complete and safe', () => {
+  const ids = new Set();
+  for (const e of DIRECTORY) {
+    assert.ok(!ids.has(e.id), `unique id ${e.id}`); ids.add(e.id);
+    assert.match(e.url, /^https:\/\/[a-z0-9.-]+\//, e.id);
+    const host = new URL(e.url).hostname.replace(/^www\./, '');
+    assert.ok(e.domains.some(d => host === d || host.endsWith(`.${d}`)) || (e.id === 'burgerking' && host === 'bk.com'), `${e.id} url on its own domain`);
+    assert.ok(e.program && e.name && e.category && e.aliases.length, e.id);
+    for (const l of e.claim?.links ?? []) assert.match(l.href, /^https:\/\/www\./);
+  }
+  assert.equal(VERIFIED_ON, '2026-10-24');
+  assert.equal(searchDirectory('pizza').map(e => e.id).includes('dominos'), true);
+  assert.equal(searchDirectory('chick')[0].id, 'chickfila'); // name match ranks above "Chicken" category
+  assert.ok(searchDirectory('chick').some(e => e.id === 'canes'));
+  assert.deepEqual(searchDirectory('zzzz'), []);
 });
 
 test('rewards detail pack uses printed receipt total and sample warning', () => {

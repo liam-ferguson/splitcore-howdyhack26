@@ -32,7 +32,6 @@ try {
   const raw = await page.eval(`return document.body.innerText.includes('Amounts match')`);
   log('Amounts match shown:', raw);
   await page.shot(`${S}/claim-top-${tag}.png`);
-  await page.click('Confirm restaurant');
   // claim units: chips are in order of items/units; use aria-labels on groups
   const tapChip = async (unitLabel, name) => {
     const ok = await page.eval(`const g=[...document.querySelectorAll('[role=group]')].find(g=>g.getAttribute('aria-label')==='Who had ${unitLabel}');
@@ -56,6 +55,7 @@ try {
   await page.click('The extra $5.00 was tip');
   await page.click('Confirm $33.54 paid');
   log('paid status:', await page.eval(`return document.querySelector('.paid .status-ok')?.innerText`));
+  log('reimbursement cents:', await page.eval(`return document.querySelector('.dock-status .money, .summary-hero .money')?.dataset.cents`));
   log('dock:', await page.eval(`return document.querySelector('.dock-status').innerText`));
   await page.shot(`${S}/claim-done-${tag}.png`, true);
   await page.click('Review split');

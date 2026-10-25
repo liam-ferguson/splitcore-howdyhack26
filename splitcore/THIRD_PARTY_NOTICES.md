@@ -42,4 +42,4 @@ Inference happens locally in a Web Worker. No receipt image or text is sent anyw
 
 ## Trademarks
 
-Chick-fil-A, McDonald's, Wendy's, PayPal, Venmo and Cash App are trademarks of their owners. SplitCore uses their names only to describe compatibility and to link to their public pages. It includes no logos and has no affiliation, endorsement or integration with them.
+PayPal, Venmo and Cash App, and every restaurant and rewards-program name in the rewards directory (`src/domain/rewards.js`, 48 US chains such as Chick-fil-A, McDonald's, Wendy's, Starbucks and Domino's), are trademarks of their owners. SplitCore uses these names only to identify a restaurant and link to its public rewards page. It includes no logos (restaurants are shown as neutral monogram tiles) and has no affiliation, endorsement or integration with any of them.

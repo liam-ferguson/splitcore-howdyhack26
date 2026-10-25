@@ -1,33 +1,29 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { formatMoney } from '../domain/money.js';
 import { FIELD_LABELS } from '../domain/receipt.js';
-import { matchMerchant } from '../domain/rewards.js';
 import { MAX_DINERS } from '../state.js';
-import { Icon, MoneyField, initials } from './ui.jsx';
-import { PointsRescueCard } from './Rewards.jsx';
+import { AnimatedMoney, Avatar, Burst, Dialog, Icon, MoneyField, ProgressRing, SplitBar, personColor } from './ui.jsx';
+import { RewardsSpotlight } from './Rewards.jsx';
 
-/** Move focus to a correction field after React renders it. */
+const prefersReduced = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+/** Move focus to a correction control after React renders it. */
 function focusSoon(id) {
   requestAnimationFrame(() => requestAnimationFrame(() => {
     const el = document.getElementById(id);
-    if (el) { el.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); el.focus({ preventScroll: true }); }
+    if (!el) return;
+    el.scrollIntoView({ block: 'center', behavior: prefersReduced() ? 'auto' : 'smooth' });
+    el.focus({ preventScroll: true });
   }));
 }
 
-export default function Claim({ bill, alloc, dispatch, demo, names, prefs, onPref, announce, onSettle, invalidCount, onViewReceipt, onOpenRewards, sample }) {
+export default function Claim({ bill, alloc, dispatch, demo, names, prefs, onPref, announce, onSettle, invalidCount, onViewReceipt, rewards, onRewardsDetails, onRewardsPick, sample }) {
   const r = bill.receipt;
-  const [chargesOpen, setChargesOpen] = useState(false);
+  const [chargesOpen, setChargesOpen] = useState(() => !alloc.check.arithmeticMatches || r.items.length === 0);
   const [editing, setEditing] = useState(/** @type {Record<string, boolean>} */ ({}));
   const check = alloc.check;
-  const reward = useMemo(() => matchMerchant(r.merchant), [r.merchant]);
-
-  // Open the bill editor automatically when the receipt needs attention on arrival.
-  const opened = useRef(false);
-  useEffect(() => {
-    if (opened.current) return;
-    opened.current = true;
-    if (!check.arithmeticMatches || r.items.length === 0) setChargesOpen(true);
-  }, []);
+  const diners = [...bill.diners].sort((a, b) => a.order - b.order);
 
   const fix = (field) => {
     if (!field) return;
@@ -35,36 +31,40 @@ export default function Claim({ bill, alloc, dispatch, demo, names, prefs, onPre
       const id = field.slice(5);
       setEditing(e => ({ ...e, [id]: true }));
       focusSoon(`item-amount-${id}`);
-    } else if (field.startsWith('unit:')) {
-      focusSoon(`unit-${field.slice(5)}`);
-    } else if (field.startsWith('discount:')) {
-      setChargesOpen(true); focusSoon(`disc-scope-${field.slice(9)}`);
-    } else if (field === 'paid') focusSoon('f-paid');
+    } else if (field.startsWith('unit:')) focusSoon(`unit-${field.slice(5)}`);
+    else if (field.startsWith('issue:')) focusSoon(`issue-${field.slice(6)}`);
+    else if (field.startsWith('discount:')) { setChargesOpen(true); focusSoon(`disc-scope-${field.slice(9)}`); }
+    else if (field === 'paid') focusSoon('f-paid');
     else if (field === 'diners') focusSoon('f-add-diner');
-    else if (field === 'payer') focusSoon('f-payer');
+    else if (field === 'payer') focusSoon(`payer-${diners[0]?.id}`);
     else if (field === 'items') { setChargesOpen(true); focusSoon('btn-add-item'); }
     else if (field === 'chargeBasis') focusSoon('btn-equal-charges');
     else if (field === 'receiptTotalCents' && check.blocking.some(i => i.code === 'mismatch')) { setChargesOpen(true); focusSoon('f-taxCents'); }
     else if (field === 'discounts') { setChargesOpen(true); focusSoon('btn-add-discount'); }
     else { setChargesOpen(true); focusSoon(`f-${field}`); }
   };
-  const firstBlocker = invalidCount > 0 ? null : alloc.blockers[0];
-  const reason = invalidCount > 0 ? 'Fix the highlighted field first.' : firstBlocker?.message;
-  const semanticIssues = r.issues;
+  const invalid = invalidCount > 0;
+  const firstBlocker = invalid ? null : alloc.blockers[0];
+  const reason = invalid ? 'Fix the highlighted field first.' : firstBlocker?.message ?? '';
+  const ready = alloc.ready && !invalid;
 
   return (
     <section className="claim" aria-labelledby="claim-title">
       <div className="workspace">
         <div className="main-col">
-          <h1 id="claim-title" className="screen-title">Who had what?</h1>
+          <h1 id="claim-title" className="screen-title reveal">Who had what?</h1>
 
-          <ReceiptStrip bill={bill} dispatch={dispatch} reward={reward} onViewReceipt={onViewReceipt} />
-          {reward && r.merchantConfirmed && <PointsRescueCard entry={reward} onOpen={onOpenRewards} sample={sample} />}
+          <ReceiptHeader bill={bill} alloc={alloc} dispatch={dispatch} onViewReceipt={onViewReceipt} />
+          <div className="reveal" style={{ '--i': 1 }}>
+            <RewardsSpotlight result={rewards} merchant={r.merchant} sample={sample} onDetails={onRewardsDetails} onPick={onRewardsPick} compact />
+          </div>
 
-          <CoreCheck check={check} receipt={r} onFix={fix} onToggle={() => setChargesOpen(o => !o)} open={chargesOpen} issues={semanticIssues} dispatch={dispatch} />
+          <People bill={bill} diners={diners} dispatch={dispatch} names={names} prefs={prefs} onPref={onPref} demo={demo} />
+
+          <CoreCheck check={check} receipt={r} onFix={fix} onToggle={() => setChargesOpen(o => !o)} open={chargesOpen} dispatch={dispatch} />
           {chargesOpen && <BillEditor receipt={r} dispatch={dispatch} check={check} />}
 
-          <PaidRow receipt={r} check={check} dispatch={dispatch} />
+          <PaidPanel receipt={r} check={check} dispatch={dispatch} onFixTotal={() => fix('receiptTotalCents')} />
           {alloc.needsEqualCharges && (
             <div className="notice notice-warning">
               <Icon name="alert" />
@@ -75,16 +75,14 @@ export default function Claim({ bill, alloc, dispatch, demo, names, prefs, onPre
             </div>
           )}
 
-          <Diners bill={bill} dispatch={dispatch} names={names} prefs={prefs} onPref={onPref} demo={demo} />
-
           <section className="items" aria-labelledby="items-title">
             <div className="section-head">
               <h2 id="items-title">Claim your food</h2>
-              <p className="muted small" aria-live="polite">{progressText(alloc)}</p>
+              <p className="pill-stat" aria-live="polite">{progressText(alloc)}</p>
             </div>
-            {!bill.diners.length && <p className="notice notice-plain">Add the people at the table above, then tap who had each item.</p>}
-            {r.items.map(item => (
-              <ItemCard key={item.id} item={item} bill={bill} alloc={alloc} dispatch={dispatch}
+            {!diners.length && <p className="notice notice-plain"><Icon name="users" /> Add the people at the table first, then tap who had each item.</p>}
+            {r.items.map((item, i) => (
+              <ItemCard key={item.id} index={i} item={item} bill={bill} diners={diners} alloc={alloc} dispatch={dispatch}
                 editing={!!editing[item.id]} setEditing={v => setEditing(e => ({ ...e, [item.id]: v }))} />
             ))}
             <AddItem dispatch={dispatch} />
@@ -101,87 +99,202 @@ export default function Claim({ bill, alloc, dispatch, demo, names, prefs, onPre
           )}
         </div>
 
-        <aside className="side-col" aria-labelledby="summary-title">
-          <Summary bill={bill} alloc={alloc} reason={reason} onSettle={onSettle} onFix={() => fix(firstBlocker?.field)} canFix={!!firstBlocker?.field} />
+        <aside className="side-col" aria-label="Your split">
+          <Summary alloc={alloc} ready={ready} reason={reason} onSettle={onSettle} onFix={() => fix(firstBlocker?.field)} canFix={!!firstBlocker?.field} />
         </aside>
       </div>
 
-      <div className="dock" role="region" aria-label="Split status">
+      {/* Portaled to <body> so no animated ancestor can become its containing block. */}
+      {createPortal(<div className="dock" role="region" aria-label="Split status">
         <div className="dock-inner">
-          <p className="dock-status">{alloc.ready && !invalidCount ? `${formatMoney(alloc.reimbursementCents)} to get back` : reason}</p>
+          <ProgressRing value={alloc.claimedUnits} max={alloc.requiredUnits} size={44} stroke={5} done={ready}>
+            {ready ? <Icon name="check" size={18} /> : <span className="ring-mini">{alloc.claimedUnits}/{alloc.requiredUnits}</span>}
+          </ProgressRing>
+          <p className="dock-status">{ready ? <><strong><AnimatedMoney cents={alloc.reimbursementCents} /></strong> to get back</> : reason}</p>
           <div className="dock-actions">
-            {(!alloc.ready || invalidCount > 0) && firstBlocker?.field && <button type="button" className="btn btn-secondary btn-small" onClick={() => fix(firstBlocker.field)}>Fix bill</button>}
-            <button type="button" className="btn btn-primary" disabled={!alloc.ready || invalidCount > 0} onClick={onSettle}>Review split <Icon name="arrow" /></button>
+            {!ready && firstBlocker?.field && <button type="button" className="btn btn-secondary btn-small" onClick={() => fix(firstBlocker.field)}>Fix</button>}
+            <button type="button" className="btn btn-primary btn-small" disabled={!ready} onClick={onSettle}>Review split <Icon name="arrow" size={16} /></button>
           </div>
         </div>
-      </div>
+      </div>, document.body)}
     </section>
   );
 }
 
 function progressText(alloc) {
-  const total = alloc.units.length;
-  if (!total) return 'No items yet.';
+  const total = alloc.requiredUnits;
+  if (!alloc.units.length) return 'No items yet';
   const left = total - alloc.claimedUnits;
   return `${alloc.claimedUnits} of ${total} units claimed · ${left} remaining`;
 }
 
-function ReceiptStrip({ bill, dispatch, reward, onViewReceipt }) {
+function ReceiptHeader({ bill, alloc, dispatch, onViewReceipt }) {
   const r = bill.receipt;
   const [edit, setEdit] = useState(false);
   const [name, setName] = useState(r.merchant);
   useEffect(() => setName(r.merchant), [r.merchant]);
   const src = bill.source;
-  const sourceLabel = src.kind === 'image' ? 'Scanned image' : src.kind === 'text' ? (src.sampleText ? 'Sample text — not a scan' : 'Pasted text') : src.kind === 'draft' ? 'Local draft' : 'Entered manually';
+  const sourceLabel = src.kind === 'image' ? 'Scanned' : src.kind === 'text' ? (src.sampleText ? 'Sample text — not a scan' : 'Pasted text') : src.kind === 'draft' ? 'Local draft' : 'Entered manually';
+  const count = r.items.reduce((s, i) => s + i.quantity, 0);
   return (
-    <div className="strip card">
-      <div className="strip-main">
-        <div className="strip-merchant">
+    <div className="receipt-head card reveal">
+      <div className="receipt-head-main">
+        <span className="receipt-icon" aria-hidden="true"><Icon name="receipt" size={24} /></span>
+        <div className="receipt-name">
           {edit ? (
             <form className="inline-form" onSubmit={e => { e.preventDefault(); dispatch({ type: 'SET_MERCHANT', merchant: name }); setEdit(false); }}>
               <label htmlFor="f-merchant" className="sr-only">Restaurant name</label>
               <input id="f-merchant" value={name} maxLength={60} onChange={e => setName(e.target.value)} autoFocus />
-              <button className="btn btn-secondary btn-small" type="submit">Save</button>
+              <button className="btn btn-primary btn-small" type="submit">Save</button>
+              <button className="btn-text btn-small" type="button" onClick={() => { setName(r.merchant); setEdit(false); }}>Cancel</button>
             </form>
           ) : (
             <>
-              <strong className="merchant-name">{r.merchant || 'Restaurant not recognized'}</strong>
-              <button type="button" className="btn-text btn-small" onClick={() => setEdit(true)}>{r.merchant ? 'Edit' : 'Add name'}</button>
+              <p className="merchant-name">{r.merchant || 'Restaurant not recognized'}</p>
+              <button type="button" className="btn-text btn-small" onClick={() => setEdit(true)} aria-label={r.merchant ? `Edit restaurant name, ${r.merchant}` : 'Add restaurant name'}><Icon name="edit" size={16} /> {r.merchant ? 'Edit' : 'Add name'}</button>
             </>
           )}
+          <p className="muted small receipt-meta">
+            {[r.dateText, r.timeText, count ? `${count} ${count === 1 ? 'item' : 'items'}` : null].filter(Boolean).join(' · ')}
+          </p>
         </div>
-        <div className="strip-total">
+        <div className="receipt-total">
           <span className="muted small">Receipt total</span>
-          <strong className="amount">{r.receiptTotalCents === null ? '—' : formatMoney(r.receiptTotalCents)}</strong>
+          <strong className="amount-lg">{r.receiptTotalCents === null ? '—' : formatMoney(r.receiptTotalCents)}</strong>
         </div>
       </div>
-      <div className="strip-meta">
+      <div className="tag-row">
         <span className="tag">{sourceLabel}</span>
         {r.sampleDisclaimer && <span className="tag tag-warn">Fictional sample receipt</span>}
-        {(src.kind === 'image' || src.rawText) && <button type="button" className="btn-text btn-small" onClick={onViewReceipt}>View source</button>}
+        <span className={`tag ${alloc.check.arithmeticMatches ? 'tag-ok' : 'tag-warn'}`}>{alloc.check.arithmeticMatches ? 'Adds up' : 'Needs a look'}</span>
+        {(src.kind === 'image' || src.rawText) && <button type="button" className="btn-text btn-small" onClick={onViewReceipt}><Icon name="image" size={16} /> View source</button>}
       </div>
-      {r.merchant && reward && !r.merchantConfirmed && !edit && (
-        <div className="strip-confirm">
-          <span>Is this <strong>{reward.name}</strong>?</span>
-          <button type="button" className="btn btn-secondary btn-small" onClick={() => dispatch({ type: 'CONFIRM_MERCHANT', confirmed: true })}>Confirm restaurant</button>
-        </div>
-      )}
     </div>
   );
 }
 
-function CoreCheck({ check, receipt, onFix, onToggle, open, issues, dispatch }) {
+function People({ bill, diners, dispatch, names, prefs, onPref, demo }) {
+  const [name, setName] = useState('');
+  const [error, setError] = useState('');
+  const [editId, setEditId] = useState(/** @type {string|null} */ (null));
+  const taken = new Set(diners.map(d => d.name.toLowerCase()));
+  const reusable = names.filter(n => !taken.has(n.toLowerCase())).slice(0, 8);
+  const full = diners.length >= MAX_DINERS;
+  const add = (n) => {
+    const clean = n.replace(/\s+/g, ' ').trim();
+    if (!clean) { setError('Enter a name.'); return; }
+    if (taken.has(clean.toLowerCase())) { setError(`${clean} is already at the table.`); return; }
+    if (full) { setError(`Up to ${MAX_DINERS} people.`); return; }
+    dispatch({ type: 'ADD_DINER', name: clean });
+    setName(''); setError('');
+  };
+  const editing = diners.find(d => d.id === editId) ?? null;
+  return (
+    <section className="people card reveal" style={{ '--i': 2 }} aria-labelledby="people-title">
+      <div className="section-head">
+        <h2 id="people-title">Who’s at the table?</h2>
+        <span className="pill-stat">{diners.length} {diners.length === 1 ? 'person' : 'people'}</span>
+      </div>
+      {diners.length > 0 && (
+        <ul className="people-list">
+          {diners.map(d => (
+            <li key={d.id}>
+              <button type="button" className="person-pill" style={{ '--pc': personColor(d.order) }} onClick={() => setEditId(d.id)} aria-label={`${d.name}${d.id === bill.payerId ? ', paid the bill' : ''}. Edit`}>
+                <Avatar name={d.name} order={d.order} size={30} payer={d.id === bill.payerId} />
+                <span className="person-name">{d.name}</span>
+                <Icon name="edit" size={14} className="person-edit" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form className="add-diner" onSubmit={e => { e.preventDefault(); add(name); }}>
+        <div className="field grow">
+          <label htmlFor="f-add-diner" className="sr-only">Add a person</label>
+          <input id="f-add-diner" value={name} maxLength={40} autoComplete="off" placeholder={full ? 'Table is full' : 'Add a person'}
+            aria-invalid={!!error || undefined} aria-describedby={error ? 'diner-err' : undefined}
+            onChange={e => { setName(e.target.value); setError(''); }} disabled={full} />
+        </div>
+        <button type="submit" className="btn btn-primary" disabled={full} aria-label="Add person"><Icon name="plus" /> Add</button>
+      </form>
+      {error && <p id="diner-err" className="field-error" role="alert">{error}</p>}
+      {reusable.length > 0 && (
+        <div className="reuse">
+          <span className="muted small">Add again:</span>
+          {reusable.map(n => <button key={n} type="button" className="chip-btn chip-btn-sm" onClick={() => add(n)}><Icon name="plus" size={14} /> {n}</button>)}
+        </div>
+      )}
+      {diners.length > 0 && (
+        <fieldset className="payer-pick">
+          <legend>Who paid the bill?</legend>
+          <div className="payer-options">
+            {diners.map(d => (
+              <label key={d.id} className={`payer-option ${d.id === bill.payerId ? 'is-on' : ''}`} style={{ '--pc': personColor(d.order) }}>
+                <input id={`payer-${d.id}`} type="radio" name="payer" checked={d.id === bill.payerId} onChange={() => dispatch({ type: 'SET_PAYER', id: d.id })} />
+                <Icon name="crown" size={14} /> {d.name}
+              </label>
+            ))}
+          </div>
+          {!bill.payerId && <p className="field-error">Choose who paid.</p>}
+        </fieldset>
+      )}
+      {!demo && (
+        <label className="check">
+          <input type="checkbox" checked={prefs.rememberNames} onChange={e => onPref({ rememberNames: e.target.checked })} />
+          Remember names on this device
+        </label>
+      )}
+      <PersonDialog person={editing} bill={bill} diners={diners} dispatch={dispatch} onClose={() => setEditId(null)} />
+    </section>
+  );
+}
+
+function PersonDialog({ person, bill, diners, dispatch, onClose }) {
+  const [text, setText] = useState('');
+  const [err, setErr] = useState('');
+  useEffect(() => { if (person) { setText(person.name); setErr(''); } }, [person?.id]);
+  return (
+    <Dialog open={!!person} onClose={onClose} title={person ? `Edit ${person.name}` : 'Edit person'} icon="users">
+      {person && (
+        <form className="person-form" onSubmit={e => {
+          e.preventDefault();
+          const clean = text.replace(/\s+/g, ' ').trim();
+          if (!clean) return setErr('Enter a name.');
+          if (diners.some(d => d.id !== person.id && d.name.toLowerCase() === clean.toLowerCase())) return setErr(`${clean} is already at the table.`);
+          dispatch({ type: 'RENAME_DINER', id: person.id, name: clean });
+          onClose();
+        }}>
+          <div className="field">
+            <label htmlFor="rename-input">Name</label>
+            <input id="rename-input" value={text} maxLength={40} autoComplete="off" onChange={e => { setText(e.target.value); setErr(''); }}
+              aria-invalid={!!err || undefined} aria-describedby={err ? 'rename-err' : undefined} />
+            {err && <p id="rename-err" className="field-error">{err}</p>}
+          </div>
+          <div className="row-wrap">
+            <button type="submit" className="btn btn-primary">Save name</button>
+            {bill.payerId !== person.id && <button type="button" className="btn btn-secondary" onClick={() => { dispatch({ type: 'SET_PAYER', id: person.id }); onClose(); }}><Icon name="crown" size={16} /> {person.name} paid</button>}
+            <button type="button" className="btn btn-danger" onClick={() => { dispatch({ type: 'REMOVE_DINER', id: person.id }); onClose(); }}><Icon name="trash" size={16} /> Remove</button>
+          </div>
+          <p className="small muted">Removing someone returns their items to unclaimed.</p>
+        </form>
+      )}
+    </Dialog>
+  );
+}
+
+function CoreCheck({ check, receipt, onFix, onToggle, open, dispatch }) {
   const arithmetic = check.blocking.filter(i => !['unknown-line', 'duplicate-field'].includes(i.code));
   const ok = check.arithmeticMatches && !check.blocking.length;
+  const notes = receipt.issues;
   return (
-    <section className={`corecheck card ${ok ? 'ok' : 'warn'}`} aria-labelledby="cc-title">
+    <section className={`corecheck card reveal ${ok ? 'ok' : 'warn'}`} style={{ '--i': 3 }} aria-labelledby="cc-title">
       <div className="section-head">
-        <h2 id="cc-title">CoreCheck · Check the bill</h2>
+        <h2 id="cc-title"><span className={`status-dot ${ok ? 'ok' : 'warn'}`} aria-hidden="true" /> CoreCheck</h2>
         <button type="button" className="btn-text btn-small" aria-expanded={open} onClick={onToggle}>{open ? 'Hide bill details' : 'Edit bill'}</button>
       </div>
       {ok ? (
         <p className="status-ok"><Icon name="check" /> {receipt.totalSource === 'manual' ? 'Reviewed bill matches' : 'Amounts match'}</p>
-      ) : (
+      ) : arithmetic.length > 0 && (
         <ul className="issue-list">
           {arithmetic.map(i => (
             <li key={i.id} className="issue">
@@ -190,9 +303,13 @@ function CoreCheck({ check, receipt, onFix, onToggle, open, issues, dispatch }) 
               {i.field && <button type="button" className="btn-text btn-small" onClick={() => onFix(i.field)}>Review</button>}
             </li>
           ))}
-          {issues.map(i => (
-            <li key={i.id} className={`issue ${i.severity === 'info' ? 'issue-info' : ''}`}>
-              <Icon name="alert" />
+        </ul>
+      )}
+      {notes.length > 0 && (
+        <ul className="issue-list">
+          {notes.map(i => (
+            <li key={i.id} id={`issue-${i.id}`} tabIndex={-1} className={`issue ${i.severity === 'info' ? 'issue-info' : ''}`}>
+              <Icon name={i.severity === 'info' ? 'info' : 'alert'} />
               <span>
                 {i.message}
                 {i.line && <code className="source-line">{i.line}</code>}
@@ -208,14 +325,14 @@ function CoreCheck({ check, receipt, onFix, onToggle, open, issues, dispatch }) 
           ))}
         </ul>
       )}
-      <p className="arith muted small">
-        Items {formatMoney(check.G)}
-        {check.I + check.B + check.U > 0 && <> − savings {formatMoney(check.I + check.B + check.U)}</>}
-        {check.T > 0 && <> + tax {formatMoney(check.T)}</>}
-        {check.S > 0 && <> + service {formatMoney(check.S)}</>}
-        {check.P > 0 && <> + tip {formatMoney(check.P)}</>}
-        {' '}= {formatMoney(check.expected)}
-        {receipt.receiptTotalCents !== null && <> · receipt {formatMoney(receipt.receiptTotalCents)}</>}
+      <p className="arith">
+        <span>Items {formatMoney(check.G)}</span>
+        {check.I + check.B + check.U > 0 && <span>− savings {formatMoney(check.I + check.B + check.U)}</span>}
+        {check.T > 0 && <span>+ tax {formatMoney(check.T)}</span>}
+        {check.S > 0 && <span>+ service & fees {formatMoney(check.S)}</span>}
+        {check.P > 0 && <span>+ tip {formatMoney(check.P)}</span>}
+        <span className="arith-eq">= {formatMoney(check.expected)}</span>
+        {receipt.receiptTotalCents !== null && <span className="muted">receipt {formatMoney(receipt.receiptTotalCents)}</span>}
       </p>
       <SavingsFound receipt={receipt} />
     </section>
@@ -227,12 +344,12 @@ function SavingsFound({ receipt }) {
   const items = new Map(receipt.items.map(i => [i.id, i]));
   return (
     <div className="savings">
-      <h3>Savings found</h3>
+      <h3><Icon name="sparkle" size={16} /> Savings found</h3>
       <ul>
         {receipt.discounts.map(d => (
           <li key={d.id}>
             <span>{d.label}</span>
-            <strong className="amount-sm">{formatMoney(-d.cents)}</strong>
+            <strong className="amount-sm savings-amt">{formatMoney(-d.cents)}</strong>
             <span className="muted small savings-scope">
               {d.scope === 'bill' ? `${formatMoney(d.cents)} shared in proportion to food`
                 : d.scope === 'item' && items.has(d.itemId) ? `Applies only to ${items.get(d.itemId).name}, split across its units`
@@ -283,30 +400,33 @@ function BillEditor({ receipt, dispatch, check }) {
                 {receipt.items.map(i => <option key={i.id} value={`item:${i.id}`}>Only {i.name}</option>)}
               </select>
             </div>
-            <button type="button" className="btn-text btn-small" onClick={() => dispatch({ type: 'DELETE_DISCOUNT', id: d.id })} aria-label={`Remove discount ${d.label}`}>Remove</button>
+            <button type="button" className="btn-text btn-small danger-text" onClick={() => dispatch({ type: 'DELETE_DISCOUNT', id: d.id })} aria-label={`Remove discount ${d.label}`}><Icon name="trash" size={16} /> Remove</button>
           </li>
         ))}
       </ul>
-      <button id="btn-add-discount" type="button" className="btn-text" onClick={() => dispatch({ type: 'ADD_DISCOUNT', cents: 0, scope: 'bill', label: 'Discount' })}><Icon name="plus" /> Add discount</button>
+      <button id="btn-add-discount" type="button" className="btn-text" onClick={() => dispatch({ type: 'ADD_DISCOUNT', cents: 0, scope: 'bill', label: 'Discount' })}><Icon name="plus" size={18} /> Add discount</button>
     </section>
   );
 }
 
-function PaidRow({ receipt, check, dispatch }) {
+function PaidPanel({ receipt, check, dispatch, onFixTotal }) {
   const p = check.paid;
   const total = receipt.receiptTotalCents;
   return (
-    <section className={`paid card ${p.state === 'ok' ? 'ok' : ''}`} aria-labelledby="paid-title">
-      <h2 id="paid-title" className="h3">Final amount paid</h2>
+    <section className={`paid card reveal ${p.state === 'ok' ? 'ok' : ''}`} style={{ '--i': 4 }} aria-labelledby="paid-title">
+      <div className="section-head">
+        <h2 id="paid-title">What did you pay?</h2>
+        {p.state === 'ok' && <span className="tag tag-ok"><Icon name="check" size={14} /> Confirmed</span>}
+      </div>
       <div className="paid-row">
-        <MoneyField id="f-paid" label="Amount charged to your card or paid in cash" cents={receipt.finalPaidCents} allowEmpty
+        <MoneyField id="f-paid" label="Amount charged to your card or paid in cash" cents={receipt.finalPaidCents} allowEmpty placeholder={total !== null ? (total / 100).toFixed(2) : ''}
           onCommit={c => dispatch({ type: 'SET_PAID', cents: c })} hint="Includes any tip you added." />
         {total !== null && receipt.finalPaidCents === null && (
           <button type="button" className="btn btn-secondary btn-small" onClick={() => dispatch({ type: 'SET_PAID', cents: total })}>Same as receipt ({formatMoney(total)})</button>
         )}
       </div>
       {receipt.extraTipCents > 0 && (
-        <p className="small">Extra tip added after the receipt: <strong>{formatMoney(receipt.extraTipCents)}</strong>{' '}
+        <p className="tip-row"><Icon name="sparkle" size={16} /> Extra tip added after the receipt: <strong>{formatMoney(receipt.extraTipCents)}</strong>
           <button type="button" className="btn-text btn-small" onClick={() => dispatch({ type: 'CLEAR_EXTRA_TIP' })}>Undo</button></p>
       )}
       {(p.state === 'more' || p.state === 'reclassify') && (
@@ -315,8 +435,8 @@ function PaidRow({ receipt, check, dispatch }) {
           <div>
             <p>You paid {formatMoney(p.delta)} more than the {formatMoney(/** @type {number} */ (total))} receipt total.</p>
             <div className="row-wrap">
-              <button type="button" className="btn btn-secondary btn-small" onClick={() => dispatch({ type: 'CLASSIFY_EXTRA_TIP' })}>The extra {formatMoney(p.delta)} was tip</button>
-              <button type="button" className="btn-text btn-small" onClick={() => document.getElementById('f-receiptTotalCents')?.focus() ?? document.getElementById('f-paid')?.focus()}>Correct the amounts instead</button>
+              <button type="button" className="btn btn-primary btn-small" onClick={() => dispatch({ type: 'CLASSIFY_EXTRA_TIP' })}>The extra {formatMoney(p.delta)} was tip</button>
+              <button type="button" className="btn-text btn-small" onClick={onFixTotal}>Correct the receipt instead</button>
             </div>
           </div>
         </div>
@@ -325,7 +445,7 @@ function PaidRow({ receipt, check, dispatch }) {
         <p className="notice notice-warning"><Icon name="alert" /> The paid amount is {formatMoney(p.delta)} below the receipt total. Check the total, or add a missing discount.</p>
       )}
       {p.state === 'unconfirmed' && (
-        <button type="button" className="btn btn-secondary" onClick={() => dispatch({ type: 'CONFIRM_PAID' })}><Icon name="check" /> Confirm {formatMoney(/** @type {number} */ (receipt.finalPaidCents))} paid</button>
+        <button type="button" className="btn btn-primary confirm-btn" onClick={() => dispatch({ type: 'CONFIRM_PAID' })}><Icon name="check" /> Confirm {formatMoney(/** @type {number} */ (receipt.finalPaidCents))} paid</button>
       )}
       {p.state === 'ok' && <p className="status-ok"><Icon name="check" /> {formatMoney(/** @type {number} */ (receipt.finalPaidCents))} paid, confirmed</p>}
       {p.state === 'waiting' && <p className="muted small">Enter the receipt total first.</p>}
@@ -333,98 +453,21 @@ function PaidRow({ receipt, check, dispatch }) {
   );
 }
 
-function Diners({ bill, dispatch, names, prefs, onPref, demo }) {
-  const [name, setName] = useState('');
-  const [error, setError] = useState('');
-  const [renaming, setRenaming] = useState(/** @type {string|null} */ (null));
-  const [renameText, setRenameText] = useState('');
-  const taken = new Set(bill.diners.map(d => d.name.toLowerCase()));
-  const reusable = names.filter(n => !taken.has(n.toLowerCase())).slice(0, 8);
-  const full = bill.diners.length >= MAX_DINERS;
-  const add = (n) => {
-    const clean = n.replace(/\s+/g, ' ').trim();
-    if (!clean) { setError('Enter a name.'); return; }
-    if (taken.has(clean.toLowerCase())) { setError(`${clean} is already at the table.`); return; }
-    if (full) { setError(`Up to ${MAX_DINERS} people.`); return; }
-    dispatch({ type: 'ADD_DINER', name: clean });
-    setName(''); setError('');
-  };
-  return (
-    <section className="diners card" aria-labelledby="diners-title">
-      <h2 id="diners-title" className="h3">At the table</h2>
-      {bill.diners.length > 0 && (
-        <ul className="diner-list">
-          {[...bill.diners].sort((a, b) => a.order - b.order).map(d => (
-            <li key={d.id} className="diner">
-              {renaming === d.id ? (
-                <form className="inline-form" onSubmit={e => { e.preventDefault(); dispatch({ type: 'RENAME_DINER', id: d.id, name: renameText }); setRenaming(null); }}>
-                  <label htmlFor={`rn-${d.id}`} className="sr-only">New name for {d.name}</label>
-                  <input id={`rn-${d.id}`} value={renameText} maxLength={40} onChange={e => setRenameText(e.target.value)} autoFocus />
-                  <button type="submit" className="btn btn-secondary btn-small">Save</button>
-                  <button type="button" className="btn-text btn-small" onClick={() => setRenaming(null)}>Cancel</button>
-                </form>
-              ) : (
-                <>
-                  <span className="avatar" aria-hidden="true">{initials(d.name)}</span>
-                  <span className="diner-name">{d.name}</span>
-                  {d.id === bill.payerId && <span className="tag tag-accent">Paid</span>}
-                  <span className="diner-actions">
-                    <button type="button" className="btn-text btn-small" onClick={() => { setRenaming(d.id); setRenameText(d.name); }} aria-label={`Rename ${d.name}`}>Rename</button>
-                    <button type="button" className="btn-text btn-small" onClick={() => dispatch({ type: 'REMOVE_DINER', id: d.id })} aria-label={`Remove ${d.name}`}>Remove</button>
-                  </span>
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      <form className="add-diner" onSubmit={e => { e.preventDefault(); add(name); }}>
-        <div className="field grow">
-          <label htmlFor="f-add-diner">Add a person</label>
-          <input id="f-add-diner" value={name} maxLength={40} autoComplete="off" placeholder="Name"
-            aria-invalid={!!error || undefined} aria-describedby={error ? 'diner-err' : undefined}
-            onChange={e => { setName(e.target.value); setError(''); }} disabled={full} />
-          {error && <p id="diner-err" className="field-error">{error}</p>}
-        </div>
-        <button type="submit" className="btn btn-secondary" disabled={full}><Icon name="plus" /> Add</button>
-      </form>
-      {reusable.length > 0 && (
-        <div className="reuse">
-          <span className="muted small">Add again:</span>
-          {reusable.map(n => <button key={n} type="button" className="chip chip-quiet" onClick={() => add(n)}>{n}</button>)}
-        </div>
-      )}
-      {bill.diners.length > 0 && (
-        <div className="field payer-field">
-          <label htmlFor="f-payer">Who paid the bill?</label>
-          <select id="f-payer" value={bill.payerId ?? ''} onChange={e => dispatch({ type: 'SET_PAYER', id: e.target.value })}
-            aria-invalid={!bill.payerId || undefined}>
-            {!bill.payerId && <option value="" disabled>Choose…</option>}
-            {[...bill.diners].sort((a, b) => a.order - b.order).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-          </select>
-        </div>
-      )}
-      {!demo && (
-        <label className="check">
-          <input type="checkbox" checked={prefs.rememberNames} onChange={e => onPref({ rememberNames: e.target.checked })} />
-          Remember names on this device
-        </label>
-      )}
-    </section>
-  );
-}
-
-function ItemCard({ item, bill, alloc, dispatch, editing, setEditing }) {
+function ItemCard({ item, index, bill, diners, alloc, dispatch, editing, setEditing }) {
   const units = alloc.units.filter(u => u.itemId === item.id);
-  const diners = [...bill.diners].sort((a, b) => a.order - b.order);
   const notice = bill.notices[item.id];
   const needs = item.needsReview || alloc.check.blocking.some(i => i.field === `item:${item.id}`);
+  const claimed = units.filter(u => (bill.claims[u.key] ?? []).length || u.grossCents === 0).length;
+  const done = units.length > 0 && claimed === units.length;
   return (
-    <article className={`item card ${needs ? 'needs' : ''}`} aria-labelledby={`item-${item.id}-name`}>
+    <article className={`item card reveal ${needs ? 'needs' : ''} ${done ? 'is-done' : ''}`} style={{ '--i': Math.min(index, 8) }} aria-labelledby={`item-${item.id}-name`}>
       <div className="item-head">
-        <div>
-          <h3 id={`item-${item.id}-name`} className="item-name">{item.name}</h3>
-          <p className="muted small">{item.quantity > 1 ? `${item.quantity} units · ${formatMoney(item.grossCents)} line total` : '1 unit'}</p>
+        <div className="item-title">
+          <span className={`item-check ${done ? 'on' : ''}`} aria-hidden="true"><Icon name="check" size={14} /></span>
+          <div>
+            <h3 id={`item-${item.id}-name`} className="item-name">{item.name}</h3>
+            <p className="muted small">{item.quantity > 1 ? `${item.quantity} units · ${formatMoney(item.grossCents)} line total` : '1 unit'}</p>
+          </div>
         </div>
         <div className="item-right">
           <strong className="amount-md">{formatMoney(item.grossCents)}</strong>
@@ -466,51 +509,63 @@ function ItemEditor({ item, dispatch }) {
       <div className="field">
         <label htmlFor={`item-name-${item.id}`}>Description</label>
         <input id={`item-name-${item.id}`} value={name} maxLength={60} onChange={e => setName(e.target.value)}
-          onBlur={() => name.trim() && name !== item.name && dispatch({ type: 'UPDATE_ITEM', id: item.id, patch: { name } })} />
+          onBlur={() => {
+            if (!name.trim()) { setName(item.name); return; }
+            if (name !== item.name) dispatch({ type: 'UPDATE_ITEM', id: item.id, patch: { name } });
+          }} />
       </div>
       <div className="field field-qty">
         <label htmlFor={`item-qty-${item.id}`}>Quantity</label>
         <input id={`item-qty-${item.id}`} inputMode="numeric" value={qty} aria-invalid={!qtyOk || undefined}
           aria-describedby={`item-qty-${item.id}-msg`}
           onChange={e => setQty(e.target.value)}
-          onBlur={() => qtyOk && Number(qty) !== item.quantity && dispatch({ type: 'UPDATE_ITEM', id: item.id, patch: { quantity: Number(qty) } })}
+          onBlur={() => { if (qtyOk && Number(qty) !== item.quantity) dispatch({ type: 'UPDATE_ITEM', id: item.id, patch: { quantity: Number(qty) } }); else if (!qtyOk) setQty(String(item.quantity)); }}
           onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
         <p id={`item-qty-${item.id}-msg`} className={qtyOk ? 'field-hint' : 'field-error'}>{qtyOk ? 'Changing it clears this line’s claims.' : 'Whole number from 1 to 20.'}</p>
       </div>
       <MoneyField id={`item-amount-${item.id}`} label="Line total (all units)" cents={item.grossCents}
         onCommit={c => dispatch({ type: 'UPDATE_ITEM', id: item.id, patch: { grossCents: c } })} />
-      <button type="button" className="btn-text btn-small danger-text" onClick={() => dispatch({ type: 'DELETE_ITEM', id: item.id })}>Delete line</button>
+      <div className="row-wrap">
+        <button type="button" className="btn-text btn-small danger-text" onClick={() => dispatch({ type: 'DELETE_ITEM', id: item.id })}><Icon name="trash" size={16} /> Delete line</button>
+      </div>
     </div>
   );
 }
 
 function UnitClaim({ unit, item, diners, owners, dispatch }) {
   const set = new Set(owners);
+  const free = unit.grossCents === 0;
   const label = item.quantity > 1 ? `Unit ${unit.index + 1} of ${item.quantity}` : null;
-  const share = owners.length > 1 ? `Shared ${owners.length} ways` : null;
   const unitName = item.quantity > 1 ? `${item.name} ${unit.index + 1} of ${item.quantity}` : item.name;
+  const ownerList = diners.filter(d => set.has(d.id));
   return (
-    <li className={`unit ${owners.length ? '' : 'unit-open'}`}>
+    <li className={`unit ${owners.length || free ? '' : 'unit-open'}`}>
       <div className="unit-head">
-        <span className="small">{label && <strong>{label}</strong>}{label && ' · '}{formatMoney(unit.grossCents)}{share && ` · ${share}`}</span>
-        {!owners.length && <span className="tag tag-warn">Needs owner</span>}
+        <span className="small unit-label">{label && <strong>{label}</strong>}{label && ' · '}{formatMoney(unit.grossCents)}{owners.length > 1 && <span className="split-pill">÷{owners.length}</span>}</span>
+        {!owners.length && (free ? <span className="tag">Free — claiming optional</span> : <span className="tag tag-warn">Needs owner</span>)}
+      </div>
+      <div className="owner-bar" aria-hidden="true">
+        {ownerList.map(d => <span key={d.id} style={{ background: personColor(d.order) }} />)}
       </div>
       <div className="chips" role="group" aria-label={`Who had ${unitName}`}>
         {diners.map((d, i) => {
           const on = set.has(d.id);
           return (
             <button key={d.id} id={i === 0 ? `unit-${unit.key}` : undefined} type="button" className={`chip ${on ? 'chip-on' : ''}`}
+              style={{ '--pc': personColor(d.order) }}
               aria-pressed={on} onClick={() => dispatch({ type: 'TOGGLE_CLAIM', key: unit.key, dinerId: d.id })}>
-              <span className="avatar avatar-sm" aria-hidden="true">{on ? <Icon name="check" size={14} /> : initials(d.name)}</span>
+              <span className="chip-dot" aria-hidden="true">{on ? <Icon name="check" size={13} /> : d.name[0].toUpperCase()}</span>
               <span className="chip-name">{d.name}</span>
             </button>
           );
         })}
       </div>
-      <div className="unit-actions">
-        {diners.length > 1 && <button type="button" className="btn-text btn-small" onClick={() => dispatch({ type: 'SHARE_ALL', key: unit.key })} aria-label={`Share ${unitName} with everyone`}>Share with everyone</button>}
-        {owners.length > 0 && <button type="button" className="btn-text btn-small" onClick={() => dispatch({ type: 'CLEAR_CLAIM', key: unit.key })} aria-label={`Clear owners of ${unitName}`}>Clear</button>}
-      </div>
+      {(diners.length > 1 || owners.length > 0) && (
+        <div className="unit-actions">
+          {diners.length > 1 && <button type="button" className="btn-text btn-small" onClick={() => dispatch({ type: 'SHARE_ALL', key: unit.key })} aria-label={`Share ${unitName} with everyone`}><Icon name="users" size={15} /> Share with everyone</button>}
+          {owners.length > 0 && <button type="button" className="btn-text btn-small" onClick={() => dispatch({ type: 'CLEAR_CLAIM', key: unit.key })} aria-label={`Clear owners of ${unitName}`}>Clear</button>}
+        </div>
+      )}
     </li>
   );
 }
@@ -521,7 +576,7 @@ function AddItem({ dispatch }) {
   const [qty, setQty] = useState('1');
   const [cents, setCents] = useState(/** @type {number|null} */ (null));
   const [err, setErr] = useState('');
-  if (!open) return <button id="btn-add-item" type="button" className="btn-text" onClick={() => setOpen(true)}><Icon name="plus" /> Add item</button>;
+  if (!open) return <button id="btn-add-item" type="button" className="add-item-btn" onClick={() => setOpen(true)}><Icon name="plus" /> Add an item</button>;
   return (
     <form className="card item-editor add-item" onSubmit={e => {
       e.preventDefault();
@@ -538,42 +593,55 @@ function AddItem({ dispatch }) {
       <MoneyField id="new-item-amount" label="Line total (all units)" cents={cents} allowEmpty onCommit={setCents} />
       {err && <p className="field-error" role="alert">{err}</p>}
       <div className="row-wrap">
-        <button type="submit" className="btn btn-secondary">Add item</button>
-        <button type="button" className="btn-text" onClick={() => setOpen(false)}>Cancel</button>
+        <button type="submit" className="btn btn-primary btn-small">Add item</button>
+        <button type="button" className="btn-text btn-small" onClick={() => { setOpen(false); setErr(''); }}>Cancel</button>
       </div>
     </form>
   );
 }
 
-function Summary({ bill, alloc, reason, onSettle, onFix, canFix }) {
-  const ready = alloc.ready && !reason?.startsWith('Fix the highlighted');
+function Summary({ alloc, ready, reason, onSettle, onFix, canFix }) {
+  const [burst, setBurst] = useState(0);
+  const wasReady = useRef(ready);
+  useEffect(() => {
+    if (ready && !wasReady.current && !prefersReduced()) setBurst(b => b + 1);
+    wasReady.current = ready;
+  }, [ready]);
+  const people = ready ? alloc.people.map(p => ({ ...p, cents: p.totalCents })) : alloc.provisional.map(p => ({ ...p, cents: p.foodCents }));
+  const segments = people.map(p => ({ id: p.id, cents: p.cents, color: personColor(p.order) }));
   return (
-    <div className="summary card">
-      <h2 id="summary-title" className="h3">Your split</h2>
-      {ready ? (
-        <>
-          <p className="summary-hero"><span className="amount">{formatMoney(alloc.reimbursementCents)}</span> to get back</p>
-          <ul className="summary-list">
-            {alloc.people.map(p => (
-              <li key={p.id}><span>{p.name}{p.isPayer ? ' (paid)' : ''}</span><strong className="amount-sm">{formatMoney(p.totalCents)}</strong></li>
-            ))}
-          </ul>
-        </>
-      ) : (
-        <>
-          <p className="muted small">Food subtotals so far (before discounts and charges). Final amounts appear when everything is claimed and checked.</p>
-          <ul className="summary-list">
-            {alloc.provisional.map(p => <li key={p.id}><span>{p.name}</span><span className="amount-sm">{formatMoney(p.foodCents)}</span></li>)}
-            {alloc.unclaimedFoodCents > 0 && <li className="muted"><span>Unclaimed food</span><span className="amount-sm">{formatMoney(alloc.unclaimedFoodCents)}</span></li>}
-          </ul>
-          {alloc.unclaimed.length > 0 && alloc.unclaimed.length <= 3 && (
-            <p className="small">Still unclaimed: {alloc.unclaimed.map(u => u.quantity > 1 ? `${u.name} ${u.index + 1} of ${u.quantity}` : u.name).join(', ')}</p>
-          )}
-          {reason && <p className="summary-reason" id="settle-reason"><Icon name="alert" /> {reason}</p>}
-        </>
+    <div className={`summary card ${ready ? 'is-ready' : ''}`}>
+      <div className="summary-top">
+        <span className="burst-anchor">
+          <ProgressRing value={alloc.claimedUnits} max={alloc.requiredUnits} size={72} stroke={7} done={ready}>
+            {ready ? <Icon name="check" size={26} /> : <span><strong>{alloc.claimedUnits}</strong>/{alloc.requiredUnits}</span>}
+          </ProgressRing>
+          <Burst fire={burst} />
+        </span>
+        <div>
+          <h2 className="h3">Your split</h2>
+          <p className="muted small">{ready ? 'Everything adds up.' : `${alloc.requiredUnits - alloc.claimedUnits} unit${alloc.requiredUnits - alloc.claimedUnits === 1 ? '' : 's'} left to claim`}</p>
+        </div>
+      </div>
+      {ready && <p className="summary-hero"><AnimatedMoney cents={alloc.reimbursementCents} className="amount-xl" /> <span>to get back</span></p>}
+      <SplitBar segments={segments} label={people.map(p => `${p.name} ${formatMoney(p.cents)}`).join(', ')} />
+      <ul className="summary-list">
+        {people.map((p, i) => (
+          <li key={p.id}>
+            <span className="dot" style={{ background: segments[i].color }} aria-hidden="true" />
+            <span className="summary-name">{p.name}{p.isPayer ? ' (paid)' : ''}</span>
+            <AnimatedMoney cents={p.cents} className="amount-sm" />
+          </li>
+        ))}
+        {!ready && alloc.unclaimedFoodCents > 0 && <li className="muted"><span className="dot dot-empty" aria-hidden="true" /><span className="summary-name">Unclaimed food</span><span className="amount-sm">{formatMoney(alloc.unclaimedFoodCents)}</span></li>}
+      </ul>
+      {!ready && <p className="muted small">Food so far, before discounts and charges. Final amounts appear when everything is claimed and checked.</p>}
+      {!ready && alloc.unclaimed.length > 0 && alloc.unclaimed.length <= 3 && (
+        <p className="small">Still unclaimed: {alloc.unclaimed.map(u => u.quantity > 1 ? `${u.name} ${u.index + 1} of ${u.quantity}` : u.name).join(', ')}</p>
       )}
+      {!ready && reason && <p className="summary-reason" id="settle-reason"><Icon name="alert" size={16} /> {reason}</p>}
       <div className="summary-actions">
-        <button type="button" className="btn btn-primary btn-block" disabled={!ready} aria-describedby={!ready && reason ? 'settle-reason' : undefined} onClick={onSettle}>Review split <Icon name="arrow" /></button>
+        <button type="button" className="btn btn-primary btn-block btn-lg" disabled={!ready} aria-describedby={!ready && reason ? 'settle-reason' : undefined} onClick={onSettle}>Review split <Icon name="arrow" /></button>
         {!ready && canFix && <button type="button" className="btn btn-secondary btn-block" onClick={onFix}>Fix bill</button>}
       </div>
     </div>

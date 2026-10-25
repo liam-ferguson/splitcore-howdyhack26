@@ -15,8 +15,8 @@ try {
     await page.waitFor(`document.querySelector('#claim-title') || document.querySelector('.notice-warning[role=alert]')`, 90000);
     const ms = Date.now() - t0;
     const data = await page.eval(`
-      const items=[...document.querySelectorAll('article.item')].map(a=>a.querySelector('.item-name').innerText+' | '+a.querySelector('.item-head .muted').innerText+' | '+a.querySelector('.amount-md').innerText);
-      return { merchant: document.querySelector('.merchant-name')?.innerText, total: document.querySelector('.strip-total .amount')?.innerText,
+      const items=[...document.querySelectorAll('article.item')].map(a=>a.querySelector('.item-name').innerText+' | '+a.querySelector('.item-title .muted').innerText+' | '+a.querySelector('.amount-md').innerText);
+      return { merchant: document.querySelector('.merchant-name')?.innerText, total: document.querySelector('.receipt-total .amount-lg')?.innerText,
         check: document.querySelector('.corecheck')?.innerText.replace(/\\s+/g,' '), items, alert: document.querySelector('[role=alert]')?.innerText };`);
     await page.click('View source').catch(() => {});
     await sleep(200);

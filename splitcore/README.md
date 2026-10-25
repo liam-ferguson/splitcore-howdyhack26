@@ -2,15 +2,22 @@
 
 **You cover the bill. We handle the split.**
 
-One person has already paid for the table. They photograph the receipt, add who was there, and tap who had what. SplitCore reads the receipt in the browser, checks that the numbers add up, and works out each person's exact share to the cent. It then prepares itemized reminders, payment-app handoffs and QR codes. For a few supported restaurants, it also points the payer to the official process for claiming missed rewards points.
+One person has already paid for the table. They photograph the receipt, add who was there, and tap who had what. SplitCore reads the receipt in the browser, checks that the numbers add up, and works out each person's exact share to the cent. It then prepares itemized reminders, payment-app handoffs and QR codes. It also recognizes 48 US restaurant chains from the receipt and links the payer to that chain's rewards sign-up page.
 
 **Snap → Claim → Settle.**
 
-- **Snap**: take a photo, choose an image, paste receipt text, or enter the bill by hand. OCR runs locally in a Web Worker (Tesseract.js) and shows real progress. You can cancel a scan.
-- **Claim**: the recognized items appear immediately. **CoreCheck** confirms that items, discounts, tax, service and printed tip add up to the receipt total, and points you to the line that needs fixing when they don't. Enter the final amount you paid. If it's more than the receipt, you mark the difference as extra tip yourself. Then tap people onto each unit: a 2-sandwich line becomes two units, and a unit can be shared by several people.
-- **Settle**: shows how much the payer gets back, the payer's own share, and a card for each other person. Each card has the full arithmetic, a Copy reminder button, optional Share, and an optional PayPal.Me link, Venmo/Cash App handoff or QR code.
+- **Snap**: drag and drop a photo, take one, choose an image, paste an image (Ctrl+V), paste receipt text, or enter the bill by hand. OCR runs locally in a Web Worker (Tesseract.js). While it reads, the real image is shown with the engine's actual stage and progress, and you can cancel.
+- **Claim**: the recognized items appear immediately, with a receipt header and a rewards card.
+  - **CoreCheck** confirms that items, discounts, tax, service and fees, and printed tip add up to the receipt total. When they don't, it points you to the line that needs fixing.
+  - Enter the final amount you paid. If it's more than the receipt, you mark the difference as extra tip yourself.
+  - Add people; each one gets a color. Tap colored chips onto each unit: a 2-sandwich line becomes two units, and a unit can be shared by several people.
+  - A progress ring, a split bar and live per-person totals update as you go.
+- **Settle**: an animated hero shows how much the payer gets back, with a donut chart of everyone's share. Each other person gets a request card with the full arithmetic, a Copy reminder button, Share, a QR code, and an optional PayPal.Me link or Venmo/Cash App handoff.
+- Loading a new receipt replaces the current bill immediately, with an **Undo** toast.
 
 No backend, accounts, API keys, payment processing or cloud OCR.
+
+**Design:** a dark "night market" theme (deep ink with lime, cyan and violet accents) using Inter with optical sizing. Each person has their own color across chips, bars and charts. Motion includes spring transitions, staggered entrances, a scan beam over the actual image, count-up money and a small celebration when the split checks out. Everything respects `prefers-reduced-motion`, keeps 44 px+ touch targets and visible focus, and reflows down to 320 px.
 
 ## Run it
 
@@ -36,7 +43,7 @@ Use **Try a sample** on the Snap screen. Demo mode keeps its own bill in memory,
 - Payment destinations are replaced by text-only demo QR codes, for example `SPLITCORE DEMO | No payment | Jordan | USD 9.11 | …`. Reminders start with "DEMO — sample only; no payment requested."
 - **Reset demo** cancels any running scan and starts a clean demo bill. **Exit demo** returns to your real bill.
 
-Sample receipts are fictional and are marked "NOT VALID FOR PAYMENT OR REWARDS". The Chick-fil-A header on sample A exists only to exercise Points Rescue, and its prices are invented.
+Sample receipts are fictional and are marked "NOT VALID FOR PAYMENT OR REWARDS". The Chick-fil-A header on sample A exists only to exercise the rewards finder, and its prices are invented. The pizza sample ("SPLITCORE CAFE") correctly finds no rewards program.
 
 ## Supported receipts
 
@@ -52,13 +59,27 @@ DRINK x2 3.20
 2 SANDWICH @ 6.00 12.00   (checked: 2 × 6.00 must equal 12.00)
 ```
 
-Summary lines: `SUBTOTAL`, `TAX`/`SALES TAX`, `SERVICE`/`SERVICE CHARGE`/`GRATUITY`, `TIP`, `TOTAL`/`GRAND TOTAL`/`TAKE-OUT TOTAL`. The parser ignores cash, change, card and tender lines, tax rates, suggested-tip tables, and date, time, order and store lines. Discounts are treated as follows:
+Summary lines:
+
+- `SUBTOTAL`
+- `TAX` / `SALES TAX` / `STATE TAX`…
+- `SERVICE` / `SERVICE CHARGE` / `GRATUITY`, plus fee lines such as `DELIVERY FEE`, `SERVICE FEE` and `BAG FEE` (these are shared like a service charge)
+- `TIP`
+- `TOTAL` / `GRAND TOTAL` / `TAKE-OUT TOTAL` / `AMOUNT DUE`
+
+Differently labelled tax or fee lines (for example `STATE TAX` + `CITY TAX`) are added together, with a visible note. The same label printed twice, or two different totals, asks you to choose.
+
+The parser ignores cash, change, card, tender, "amount paid" and rounding lines, tax rates, suggested-tip tables, and date, time, order and store lines. Priced lines after the total are shown as non-blocking notes, and $0.00 promo lines are ignored.
+
+Discounts are treated as follows:
 
 - `BILL DISCOUNT` and `RECEIPT DISCOUNT` apply to the whole bill.
 - `<ITEM NAME> DISCOUNT` applies to that item, but only if exactly one line has that name.
 - `COUPON`, `PROMO` and unlabeled negative amounts wait for you to choose what they apply to.
 
-Lines with a price that can't be read are kept, and you add them as items or exclude them. Several conflicting totals or tax lines ask you to choose one. SplitCore never invents a charge or adds a balancing adjustment. Wrapped descriptions, modifiers, multi-column layouts and handwriting need manual correction. **There is no general claim of OCR accuracy.**
+Lines with a price that can't be read are kept, and you add them as items or exclude them. Free ($0.00) items don't need an owner. SplitCore never invents a charge or adds a balancing adjustment. Wrapped descriptions, modifiers, multi-column layouts and handwriting need manual correction. **There is no general claim of OCR accuracy.**
+
+The restaurant name is the first header line that looks like a business name. Addresses, phone numbers, "WELCOME TO" and copy/check boilerplate are skipped, and you can edit the name.
 
 ## How the split is calculated
 
@@ -88,11 +109,23 @@ SplitCore **prepares** requests. It never sends or processes them, and it has no
 
 QR codes are generated locally. Copy confirms success only after the clipboard write succeeds; if the clipboard is blocked, the text is shown selected so you can copy it manually.
 
-## Points Rescue
+## Rewards finder
 
-Points Rescue is a small, fixed US directory covering Chick-fil-A One, MyMcDonald's Rewards and Wendy's Rewards. Policies were checked on October 24, 2026. It appears only after you confirm that the restaurant name in the receipt header matches.
+SplitCore looks at the receipt and checks whether the restaurant has a rewards program. The directory covers **48 US chains**, from Chick-fil-A, McDonald's, Starbucks, Domino's, Pizza Hut and Papa Johns to Whataburger, Raising Cane's and Torchy's Tacos.
 
-It shows the restaurant's official instructions and links, plus copyable receipt details. Those details use the receipt's own total, never the amount including added tip, and mark missing fields as "not recognized". SplitCore never says a receipt is eligible, never estimates points, never signs in and never submits anything. Samples always say "Sample only — do not submit."
+- **How it decides:**
+  1. Your own choice wins.
+  2. Otherwise it matches the restaurant name.
+  3. Otherwise it tries the other header lines (before the first price).
+  4. Otherwise it tries a website printed on the receipt, such as `papajohns.com`.
+
+  Item lines are never searched, so "PIZZA HUT STYLE CRUST" or "WENDY BURGER" on another restaurant's receipt can't trigger a match. Whole names only: "Wendy burger" is not Wendy's. The card always shows its evidence, for example *Found "Chick-fil-A" at the top of your receipt*.
+- **What you get:**
+  - A **Join {program}** button that opens the chain's official rewards or sign-up page in a new tab.
+  - For Chick-fil-A One, MyMcDonald's Rewards and Wendy's Rewards, verified steps for **adding a missed visit**, plus copyable receipt details. These use the receipt's own total, not the amount with added tip.
+- **Wrong or missing?** Use **Not {restaurant}?** or **Choose a restaurant** to search the directory, or pick **None of these**. Editing the restaurant name re-runs detection on the new name.
+- **Every link was loaded and checked on October 24, 2026.** Run `node scripts/browser-checks/rewards-links.mjs` to re-check. Where a page didn't state an official program name, SplitCore uses a plain descriptive name (such as "Burger King rewards") rather than guessing. SplitCore uses no logos: each restaurant gets a neutral monogram tile.
+- SplitCore never says a receipt is eligible, never estimates points, never signs in and never submits anything. Sign-up happens on the restaurant's site. Samples always say "Sample only — do not submit."
 
 ## Privacy and storage
 
@@ -109,11 +142,12 @@ src/domain/     money.js (parseCents, apportion), receipt.js (parser, reconcilia
                 split.js (allocation), requests.js (links, messages, demo payload), rewards.js
 src/services/   ocr.js (one worker, cancel, stale-job guard, 45 s no-progress watchdog), storage.js
 src/state.js    single reducer, boundary validation, sanitized drafts
-src/components/ Snap, Claim, Settle, Rewards, ui primitives
+src/components/ Snap, Claim, Settle, Rewards, ui primitives (motion, rings, charts, dialogs, toasts, error boundary)
 src/demo/       fixture TEXT only
 public/demo/    sample PNGs rendered from that text (scripts/make-fixtures.mjs)
 fixtures/       QA images: changed-price C, renamed A, tax-typo A
-tests/          node:test suites
+tests/          node:test suites (58 tests)
+scripts/browser-checks/  zero-dependency Chrome DevTools checks against the production preview
 ```
 
 ## Before submitting to HowdyHack

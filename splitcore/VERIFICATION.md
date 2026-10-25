@@ -1,196 +1,183 @@
 # SplitCore — Verification log
 
-Date: **October 24, 2026** (America/Chicago). Build session: about 21:48–22:30 CDT, roughly 40 minutes of implementation plus verification.
-Environment: Windows 11 Pro 10.0.26200, Node **24.22.1**, npm 11.19.1, Google Chrome **156.0.8078.47**, run headless and driven over the DevTools Protocol by `scripts/browser-checks/`. No physical phone was used.
+Last full run: **October 24, 2026**, about 23:30 CDT, after the redesign and bug-fix pass.
+Environment: Windows 11 Pro 10.0.26200, Node **24.22.1**, npm 11.19.1, Google Chrome **156.0.8078.47**, run headless and driven over the DevTools Protocol by `scripts/browser-checks/` (no test-framework dependency). All browser checks ran against the **production build** (`vite preview`, http://127.0.0.1:4173). No physical phone was used.
 
 ## Status labels
 
 - **Automated pass**: `npm test` (Node built-in test runner)
-- **Browser observed**: scripted Chrome checks against the production preview (`vite preview`, http://127.0.0.1:4173), with screenshots reviewed
-- **Documentation only**: checked against provider documentation; no live run
+- **Browser observed**: scripted Chrome checks against the production preview, with screenshots reviewed by eye
 - **Pending**: needs a physical device, a real account or a human
-- **Failed / known limitation**
+- **Known limitation**
 
-## Installed versions (from the lockfile)
+## Versions (lockfile)
 
-| Package | Planned | Installed |
-|---|---|---|
-| react / react-dom | 19.3.1 | 19.3.1 |
-| vite (dev) | 8.3.5 | 8.3.5 |
-| tesseract.js | 6.0.1 | 6.0.1 |
-| tesseract.js-core | resolved by v6 | 6.1.2 in node_modules. At runtime tesseract.js 6.0.1's default `corePath` loads **tesseract.js-core@v6.0.0** from cdn.jsdelivr.net. |
-| English model | default | `@tesseract.js-data/eng` `4.0.0_best_int` from cdn.jsdelivr.net |
-| qrcode | 1.5.4 | 1.5.4 |
-| Inter | 4.1 | 4.1 `InterVariable.woff2`, self-hosted, OFL-1.1 |
+react / react-dom 19.3.1 · vite 8.3.5 · tesseract.js 6.0.1 · tesseract.js-core 6.1.2 installed · qrcode 1.5.4 · Inter 4.1, self-hosted.
 
-All planned versions resolved exactly, with no substitutions. A clean `npm ci` → `npm test` → `npm run build` in a fresh copy passed.
+At runtime, tesseract.js 6.0.1 loads its worker, the `tesseract.js-core@v6.0.0` engine and the `@tesseract.js-data/eng` `4.0.0_best_int` model from cdn.jsdelivr.net (observed). No new dependencies were added in the redesign; all motion is CSS plus a small `requestAnimationFrame` tween.
 
-## Automated pass — `npm test`: 50 tests, 0 failures
+## Bugs found and fixed in this pass
 
-- **money**:
-  - `parseCents` accepts and rejects inputs as specified.
-  - The allocator gives 1001 split three ways as 334/334/333, and 1 split three ways as 1/0/0.
-  - Zero totals, zero weights and missing basis behave as specified; ties follow stable order.
-  - Fixture A's tax, service and tip buckets match.
-  - A 600-case loop checks conservation and floor/ceiling bounds.
-- **receipt**:
-  - Fixtures A, B and C parse field for field.
-  - CRLF, NBSP and Unicode minus are normalized.
-  - All five quantity forms parse; an `@` price mismatch creates an issue.
-  - SUBTOTAL is never read as TOTAL; gross, net and unresolved subtotals behave as specified.
-  - Duplicate and conflicting totals and tax lines are flagged.
-  - Excluded lines are ignored: tender, change, card, auth, tax rate, suggested tip, metadata.
-  - Uncertain lines (unlabeled negative, `4.8`, `500`, multi-column, `TOTAL 2854`) become issues, and no balancing charge is added.
-  - Discount scope rules hold, including a deleted target staying blocking, item discount > line rejected, and discount > food rejected.
-  - Printed TIP versus extra tip and paid states behave as specified.
-  - `parseReceipt.length === 1`: no filename or mode argument.
-- **split / state**:
-  - Fixture A table exact: **11.02 / 9.11 / 13.41**, reimbursement **22.52**.
-  - Payer changed to Sam → reimbursement **20.13**.
-  - Fixture B exact: **9.24 / 9.23 / 11.54**, reimbursement **20.77**; one owner of both pizzas gets the full $4 item discount.
-  - Fixture C: **3.34 / 3.34 / 3.33**, reimbursement 6.67. The $10.02 variant gives 3.34 × 3. TAPAS 7.01 gives 3.51 / 3.50.
-  - Penny ties follow creation order, not display order.
-  - Assignment variants work: toggle, only one, share all (new diners not auto-added), clear, remove diner.
-  - A quantity edit clears only that line.
-  - Provisional food is shown while incomplete; paid below the receipt blocks.
-  - Printed tip plus extra tip increment, the zero basis with explicit equal split, and a no-food diner getting $0 all behave as specified.
-  - 200 generated, financially valid bills conserve every cent.
-  - Sanitized drafts round-trip without IDs, date, raw text or payment, and require reconfirmation. Corrupt or old drafts are rejected.
-  - Demo and real bills stay separate.
-- **requests / rewards**:
-  - PayPal.Me gives `https://paypal.me/SplitCoreExample/9.11USD`, `/0.01USD` and `/10.00USD`; zero gives no link.
-  - Handle and URL normalization reject http, userinfo, port, lookalike suffix, `javascript:`, `data:`, bad encoding and the wrong provider.
-  - Venmo and Cash App never get amounts added.
-  - The exact reminder text is checked.
-  - Demo never returns an active link, and the demo payload is exact.
-  - Merchant matching handles `Wendy burger` → none.
-  - The rewards detail pack uses $28.54, never $33.54, and starts with DO NOT SUBMIT.
+| # | Bug | Effect | Fix |
+|---|---|---|---|
+| 1 | A scan finishing checked the bill **captured when the scan started** (stale closure), and a "Replace bill?" dialog stayed on Snap | After dismissing the dialog, "Continue" reopened the old Chick-fil-A bill while you were scanning something else — the likely source of the reported "asked if it was Chick-fil-A for a pizza receipt" | New receipts read the latest state through a ref and replace the bill immediately, with an **Undo** toast. Undo returns to the previous bill's Claim view. Snap names the bill in progress ("Chick-fil-A bill in progress"). Regression test: a pizza receipt after a Chick-fil-A bill shows no Chick-fil-A text anywhere. |
+| 2 | Rewards detection only knew 3 chains and needed a separate "Confirm restaurant" step | Most restaurants got nothing | 48-chain directory. Evidence-based detection (name → header → printed website; never item lines). Visible evidence, a searchable picker, and "None of these". |
+| 3 | Merchant detection could pick an address, phone number, "CUSTOMER COPY" or "WELCOME" line | Wrong name, wrong or no rewards match | The header-line scorer skips boilerplate, addresses, phones and city/ZIP lines, and strips "WELCOME TO". |
+| 4 | Real receipts' payment lines after the total ("AMOUNT PAID", unknown priced lines) blocked settlement | You couldn't finish | Post-total priced lines are non-blocking notes, and more tender lines are recognized. |
+| 5 | Delivery, service and bag **fee** lines became food items you had to claim; "ROOM SERVICE BURGER" could become a service charge | Wrong split, or a stuck bill | Fee lines go to the "Service & fees" bucket, and the service pattern is anchored to the start of the line. |
+| 6 | $0.00 items had to be claimed, and $0.00 promo lines created a blocking discount | Needless blockers | Free units are optional to claim; zero-value promos are ignored. |
+| 7 | A saved draft containing an item discount whose item had been deleted was **rejected entirely** on restore | Lost draft | The draft restores, with the same "choose what this applies to" issue. |
+| 8 | "Correct the amounts instead" always focused the paid field (`focus() ?? …` evaluates both sides) | The button did the wrong thing | It now opens the bill editor and focuses the right field. |
+| 9 | Unreadable-line issues had no focus target, so "Fix bill" did nothing for them | Dead button | Issues have ids and Fix focuses them. |
+| 10 | Failed OCR's "Edit the bill" threw away the recognized text | Re-typing everything | "Edit what we read" loads the partial text. |
+| 11 | A receipt image URL wasn't tied to its bill | "View source" could show another bill's image after switching between demo and real, or after Undo | Each bill stores its own image URL; old URLs are revoked once no bill uses them. |
+| 12 | Found during redesign QA: entrance animations used `fill-mode: both`, leaving a transform on the page wrapper | The fixed mobile dock was positioned off-screen | Entrance animations use `backwards` fill, and the dock renders through a portal. |
+| 13 | Found during redesign QA: grid tracks auto-sized to content | Long names widened the page by 23 px at 320 px | Grid tracks are clamped with `minmax(0, 1fr)`, plus `min-width: 0` on the flex text. |
+| 14 | Found during redesign QA: a generic input rule out-specified the money-input padding | "$33.54" displayed as "$3.54" | Fixed specificity. The same fix applies to the search field. |
+| 15 | Clicking "Try a sample", or closing a dialog whose opener was removed, dropped keyboard focus to `<body>` | Keyboard users lost their place | Focus moves to the samples heading, or falls back to main content. |
+| 16 | Reduced-motion users would never see a chip's checkmark, because it is drawn by an animation | Missing state indicator | The checkmark is shown statically under `prefers-reduced-motion`. |
+
+## Automated pass — `npm test`: 58 tests, 0 failures
+
+The earlier suites still pass:
+
+- **money**: parsing, the allocator, and a 600-case conservation loop
+- **parser**: fixtures A, B and C field for field; quantity forms; subtotal and total interpretations; excluded lines; uncertain lines; discount scopes; tip states
+- **allocation**: exact tables for A, B and C; payer change → $20.13; ties; assignment variants; quantity invalidation; zero basis; 200 generated bills conserve every cent; drafts; demo/real separation
+- **requests**: PayPal string; URL allowlists; Venmo and Cash App; exact demo payload
+
+New in this pass:
+
+- **Merchant detection**:
+  - "WELCOME TO / DOMINO'S PIZZA / 123 MAIN ST" → "DOMINO'S PIZZA"
+  - address, phone and ZIP lines are skipped
+  - copy/check boilerplate gives no merchant
+  - printed websites are captured
+- **Lines**:
+  - `STATE TAX` + `CITY TAX` add up with an info note; the same `TAX` label twice asks for a choice
+  - fees go to "Service & fees"
+  - "ROOM SERVICE BURGER" stays an item
+  - post-total lines and $0.00 promos are non-blocking
+  - leading "+" is stripped from item names
+- **Rewards matching**:
+  - 15 real-world header variants match the right chain
+  - 7 near-misses don't ("Wendy burger", "THE PIZZA SHACK", "DQUICK MART", "Starbuck Lane Diner"…)
+  - a pizza receipt with "PIZZA HUT STYLE CRUST" and "WENDYS FRIES" items matches nothing
+  - header-line and website (`papajohns.com`) matches work
+  - a user choice or "none" wins
+  - an edited merchant name is the only evidence used
+  - all 48 directory URLs are HTTPS on the brand's own domain, with unique ids
+  - search ranks name matches first
+- **State**:
+  - $0.00 units are optional
+  - an orphaned item-discount draft restores
+  - editing the merchant clears a manual rewards choice
+  - `loadId` increments on each new receipt
 
 ## Browser observed — production preview
 
-### Real OCR (Tesseract.js in a Web Worker, real image bytes)
+### Real OCR (`ocr-evidence.mjs`, via the real file input)
 
-Uploaded through the real "Choose image" file input (`ocr-evidence.mjs`). Every item name, quantity, line amount, discount, subtotal, tax, service, total, merchant, date, time, store and order number matched the fixture text. Raw OCR output is saved in `scripts/browser-checks/out/ocr-evidence.txt` when the script is re-run.
+| Image | Result |
+|---|---|
+| `public/demo/sample-a.png` | Every field correct (Chick-fil-A, 4 lines, bill discount, subtotal, tax, service, $28.54), Amounts match |
+| `public/demo/sample-b.png` | Correct; PIZZA DISCOUNT targets PIZZA only |
+| `public/demo/sample-c.png` | Correct, $10.01 |
+| `fixtures/penny-diner-changed.png` | **$10.02** read; the result follows the image |
+| `fixtures/renamed-receipt-photo.png` | Same as A; the filename has no effect |
+| `fixtures/sample-a-tax-typo.png` | "Items and charges are $1.00 below the receipt total. Review the highlighted lines." |
 
-| Image | Result | Wall time (incl. page load) |
-|---|---|---|
-| `public/demo/sample-a.png` | All fields correct, Amounts match | 1.5–2.1 s |
-| `public/demo/sample-b.png` | All fields correct; PIZZA DISCOUNT → PIZZA only | 0.8–1.5 s |
-| `public/demo/sample-c.png` | Correct, $10.01 | 0.8 s |
-| `fixtures/penny-diner-changed.png` (prices changed to 10.02) | **$10.02** read; result follows the image | 0.6 s |
-| `fixtures/renamed-receipt-photo.png` (copy of A, renamed) | Same as A, so the filename has no effect | 1.0–1.2 s |
-| `fixtures/sample-a-tax-typo.png` (tax printed 1.08) | "Items and charges are $1.00 below the receipt total. Review the highlighted lines." | 1.1–1.6 s |
+Wall times were 0.7–2.1 s per image on this desktop, including page load. This is not a speed claim.
 
-Times are from this fast desktop and network and are not a speed claim. The demo "Scan sample image" button sends the same PNG bytes through the same `scanImage` → `parseReceipt` path: A took 2.1 s through the UI, with real stage messages (Loading OCR engine → Loading English model → Starting recognizer → Reading text with real progress).
+### Acceptance flows (`interactions.mjs`: 67/67 pass)
 
-### Flow and interaction checks (`interactions.mjs`: 51/51 pass; `flowA.mjs`; `offline-model.mjs`; `source-view.mjs`)
-
-- **Fixture A, end to end at 390×844 and 1440×900** (sample text and real OCR):
-  - Maya, Jordan and Sam claim units as in the playbook; progress reads "6 of 6 units claimed".
-  - Entering $33.54 shows "You paid $5.00 more than the $28.54 receipt total", with the button "The extra $5.00 was tip", then "Confirm $33.54 paid".
-  - Settle shows "**$22.52 to get back**" and "Maya's share $11.02 · Paid $33.54". There are cards for Jordan ($9.11) and Sam ($13.41) and no request to Maya.
 - **Discrepancy**:
-  - Tax 2.08 → 1.08 shows the $1.00 warning, disables settlement and the Settle step, and clears paid confirmation.
-  - "Review" focuses the tax field.
-  - Correcting it restores "Amounts match", but settlement stays disabled until the paid amount is reconfirmed.
-- **Paid amount**:
-  - Raising paid by $5 without classifying it is blocked, with the classify choice shown.
-  - Classifying does not duplicate the tip.
-- **Payer and names**:
-  - Changing the payer to Sam gives **$20.13**, with shares unchanged.
-  - Renaming changes the name but not the amounts or paid confirmation.
-- **Invalidation**:
-  - Unclaiming a drink shows "Still unclaimed: DRINK 2 of 2" and hides final totals and requests.
-  - A quantity edit shows the inline notice, keeps the other 6 claims, and clears paid confirmation.
-  - Removing a diner returns their units to "Needs owner".
-- **Copy**:
-  - With clipboard permission, the copied text was read back: "DEMO — sample only; no payment requested. Hey Jordan! Your share at Chick-fil-A is $9.11 …"
-  - "Copied" appears only after the write resolves.
-  - With the write rejected, a focused, selected read-only textarea fallback appears.
-- **Demo QR**:
-  - Payload text is exact, and the page has no PayPal, Venmo or Cash App anchors in demo mode.
-  - The **rendered QR was screenshotted and independently decoded with jsQR 1.4.0** to exactly `SPLITCORE DEMO | No payment | Jordan | USD 9.11 | Food 6.84 + tax 0.57 + service 0.34 + extra tip 1.36 | Sample only`.
-  - After moving Nuggets to Jordan, the payloads update (Jordan USD 18.69, Sam USD 3.83), and no stale amount remains.
-- **Points Rescue**:
-  - Appears after "Confirm restaurant".
-  - The dialog shows "Sample only — do not submit this receipt.", $28.54 (not $33.54), and "Policy checked October 24, 2026".
-  - Links use `target=_blank rel="noopener noreferrer"`.
-  - Escape closes the dialog and focus returns to "See how".
+  - Tax 2.08 → 1.08 shows the $1.00 warning and disables settlement and the Settle step.
+  - Paid confirmation is cleared.
+  - "Review" focuses Tax; fixing it needs reconfirmation.
+- **Extra tip**: raising the paid amount is blocked until it's classified; classifying once does not duplicate the tip.
+- **Settle**:
+  - Headline **$22.52** (exact cents read from `data-cents`), "Maya's share $11.02 · Paid $33.54", and no card asking Maya to pay herself.
+  - Payer changed to Sam (radio pills) gives **$20.13**, with shares unchanged at 1102/911/1341.
+- **People dialog**: rename keeps amounts and paid confirmation; a duplicate name shows an error; Remove returns that person's units to "Needs owner".
+- **Invalidation**: unclaiming shows the exact remaining unit and hides final totals; a quantity edit clears only that line.
+- **Reported-bug regression**:
+  1. After a claimed Chick-fil-A bill, Snap shows "Chick-fil-A bill in progress".
+  2. Loading the pizza sample shows **SPLITCORE CAFE**, never the text "Chick-fil-A", "No rewards program found for SPLITCORE CAFE", and zero claims.
+  3. **Undo** restores the Chick-fil-A bill with all 8 claim chips.
+- **Rewards**:
+  - Picker → Domino's gives a Join link `https://www.dominos.com/my-deals-and-rewards`, labelled "You chose this restaurant".
+  - Editing the merchant to "Pizza Hut #4421" switches to Hut Rewards; "None of these" turns lookup off.
+  - Chick-fil-A is detected automatically, with Join → `https://www.chick-fil-a.com/one`.
+  - The "Add this visit" dialog shows the sample warning, $28.54 (not $33.54), "Join or sign in…" and the checked date.
+  - All 3 links use `target=_blank rel="noopener noreferrer"`. Escape closes the dialog and focus returns to its opener.
+- **Copy**: the clipboard read back the exact Jordan reminder; with the clipboard denied, a focused, selected textarea fallback appears.
+- **Demo QR** (dialog):
+  - Exact payload text, and no PayPal, Venmo or Cash App links anywhere in demo.
+  - The **rendered QR, screenshotted and decoded independently with jsQR**, gives exactly `SPLITCORE DEMO | No payment | Jordan | USD 9.11 | Food 6.84 + tax 0.57 + service 0.34 + extra tip 1.36 | Sample only`.
+  - The payload updates after an assignment edit, and focus returns to the button.
 - **Real mode**:
-  - Pasting `TAPAS 7.01 / TOTAL 7.01` and sharing between Maya and Jordan gives 3.51 / 3.50.
-  - PayPal.Me `SplitCoreExample` builds the anchor `https://paypal.me/SplitCoreExample/3.50USD`. It was **not opened**.
-  - A lookalike Venmo URL is rejected, and the "Pay to @maya-example" copy fallback remains.
-- **Cancel and reset**:
-  - Reset demo during a scan cancels it, and the stale result never lands.
-  - Cancel then scanning C makes the new result win.
+  - A pasted `TAPAS 7.01` shared between two people gives 3.51/3.50.
+  - PayPal.Me builds `https://paypal.me/SplitCoreExample/3.50USD` (not opened).
+  - A lookalike Venmo URL is rejected, with the handle fallback kept.
+- **Cancel / reset**: Reset demo during a scan cancels it and no stale result lands; cancel then a new scan makes the new one win.
 - **Bad inputs** (each recovers with retry, paste and edit choices):
-  - PDF → conversion advice
+  - PDF → advice
   - HEIC → advice
-  - blank PNG → "Couldn't read this receipt…"
-  - 20-megapixel PNG → "over 16 megapixels"
-  - sideways A fails, then **Rotate 90° and scan** recovers it with Amounts match
-  - CDN blocked (model/worker download failure) → "Couldn't read this receipt…" in about 130 ms, and paste still works
-- **Keyboard**: Tab reaches the unit chips, Space toggles `aria-pressed`, and the focus outline is 3px solid.
-- **Storage**:
-  - A corrupt draft or names entry is ignored without a crash.
-  - With localStorage throwing, the app works and says "Saving failed; this session still works in memory."
-- **Network** (`network.mjs`, page and Web Worker sessions): the only external requests during a scan were three GETs: `tesseract.js@v6.0.1/dist/worker.min.js`, `tesseract.js-core@v6.0.0/tesseract-core-simd-lstm.wasm.js` and `@tesseract.js-data/eng/4.0.0_best_int/eng.traineddata.gz`. **No POST or PUT, and no image or text upload.**
-- **No runtime errors** in any production-preview run. The only error-level log is the browser's own worker `importScripts` failure during the deliberate CDN-block test.
+  - blank → "Couldn't read this receipt…"
+  - 20-megapixel image → limit message
+  - sideways A → **Rotate 90° and scan** reaches Amounts match
+- **Keyboard**: Tab reaches chips; Space toggles `aria-pressed`; the focus ring is 3px solid; payer radios move with the arrow keys.
+- **Storage**: corrupt data is ignored; with localStorage throwing, the app works and explains the failure.
+- No runtime errors.
 
-### Layout and accessibility (`visual.mjs`: 27/27)
+### Layout, motion and accessibility (`visual.mjs`: 27/27; `overflow.mjs`; `tour.mjs`)
 
-- **390×844, 320×700, 640×450 (layout width of 200% zoom on 1280×900) and 1440×900**:
-  - No horizontal scrolling on Snap, Claim or Settle, even with a 21-character diner name, a 50-character item and $1,337.75 amounts.
-  - Chips stay 44px tall and keep their full accessible text.
-  - The mobile dock never covers the last content (211 px or more clearance), and a focused field stays above it.
-  - Desktop uses the 720 + 320 px layout with a sticky summary.
-- **Reduced motion**: animations and transitions compute to `none` / `0s`.
-- These are scripted geometry checks, not a full accessibility audit; there is no WCAG certification claim.
+- **No horizontal overflow** at 320, 360, 390, 640 (layout width of 200% zoom on 1280) and 1440 px, with a 21-character name, a 50-character item and $1,337.75 amounts.
+- Chips are 44 px or taller and keep their full names.
+- The fixed mobile dock is visible and never covers the last content or a focused field.
+- `prefers-reduced-motion` turns off animations and transitions.
+- Screens reviewed by eye at 390×844 and 1440×900: Snap, demo samples, live scan, Claim (top, items, ready), Settle (hero, donut, cards), QR dialog, rewards dialog, restaurant picker.
 
-## Documentation only
+### Other checks
 
-- PayPal.Me URL format follows PayPal's public FAQ, as listed in SPLITCORE_RESEARCH.md. No live recipient was used.
-- Venmo and Cash App: SplitCore only copies the handle and opens unchanged, allowlisted user links. No live link was available.
-- Official rewards pages, fetched with plain GETs (no sign-in):
-  - Chick-fil-A forgottoscan → 200
-  - Chick-fil-A FAQ → 200
-  - Wendy's rewards → 200
-  - Wendy's form → 200
-  - **McDonald's FAQ → 403 / "Access Denied" to automated clients**. The page could not be confirmed this way.
+- **Network during a scan** (`network.mjs`, page and Web Worker): the only external requests are 3 GETs to cdn.jsdelivr.net for the worker, core and model. No POST or PUT; the image and text never leave the browser.
+- **Model download blocked** (`offline-model.mjs`): "Couldn't read this receipt…" in about 140 ms, and paste still works.
+- **Source highlighting** (`source-view.mjs`): item and discount lines are marked; unreadable and unresolved lines are flagged for review.
+- **Rewards links** (`rewards-links.mjs`): **53/53** directory URLs load.
+  - 42 returned 200 to a plain request.
+  - 11 sites' bot protection blocked plain requests; those pages rendered correctly in Chrome.
+  - The McDonald's FAQ, blocked in the first pass, now loads.
+- A clean `npm ci` → test → build reproduction passed in the first pass. No dependencies changed since; `package-lock.json` is unchanged.
 
 ## Pending (not executed — do not claim)
 
-- **A photo of printed sample A** taken with a real camera. Recognition of photographed paper is unverified; only the generated PNGs were scanned.
-- **Phone camera capture** through "Take photo" (`capture="environment"`) on iOS or Android.
-- **Phone QR scan**. The QR was decoded from screen pixels with jsQR, not by a phone camera.
-- **Native share sheet** on a phone. Desktop headless Chrome exposed `navigator.share`, but no share sheet was opened.
-- **Opening a real payer-supplied PayPal, Venmo or Cash App link**; no authorized recipient was available.
-- **McDonald's FAQ in a normal browser**; the automated fetch was blocked.
-- Screen-reader pass (NVDA or VoiceOver) and real 200% browser zoom. The geometry was emulated by viewport width.
-- Event submission requirements: Devpost deadline, category, video and repository rules.
+- A photo of a **printed** receipt taken with a real camera (only generated PNGs were scanned), and phone camera capture through "Take photo".
+- A **phone** scan of the QR. It was decoded from screen pixels with jsQR, not by a phone camera.
+- The native share sheet on a phone, and opening a real payer's PayPal, Venmo or Cash App link.
+- Signing up for or claiming on any rewards program. SplitCore only links; no account was created.
+- A screen-reader pass (NVDA or VoiceOver) and real browser zoom (emulated here by viewport width).
+- Event submission rules (Devpost deadline, category, video, repository).
 
 ## Known limitations
 
-- Only the supported layout grammar is parsed automatically. Wrapped names, modifiers, multi-column text and handwriting need manual correction.
-- First OCR use needs network access to cdn.jsdelivr.net. Offline startup is not supported, and same-origin OCR assets were not packaged because the default delivery worked.
+- Only the supported layout grammar is parsed automatically; wrapped names, modifiers, multi-column text and handwriting need manual edits.
+- First OCR use needs network access to cdn.jsdelivr.net; offline startup is not supported.
 - "Amounts match" checks arithmetic only. Offsetting OCR errors could still match, so the source view stays available.
-- Proportional tax, service and tip is a reimbursement convention; item-specific tax exemptions are not modeled.
-
-## P2 status
-
-- **Done**: inline source highlighting. The receipt-source dialog marks lines that became items or discounts, and lines needing review.
-- **Omitted**: additional OCR normalization for other receipt layouts; accessibility polish beyond the checks above.
+- The rewards directory is static (48 US chains). Program terms and URLs can change; re-run `rewards-links.mjs` before demoing. Missed-visit steps are verified for Chick-fil-A, McDonald's and Wendy's only.
+- Dark theme only.
 
 ## Recording quick path
 
-1. `cd splitcore && npm run preview -- --host 127.0.0.1`, then open **http://127.0.0.1:4173/** in a clean Chrome profile. Set DevTools device mode to 390×844 if recording a mobile viewport.
-2. Warm OCR: **Try a sample → Scan sample image** (Dinner for three) once. Then **Reset demo** and return to **Snap**.
-3. Record A (storyboard in SPLITCORE_TEST_AND_DEMO.md §10):
-   1. **Scan sample image**, or upload your photo of the printed A with **Choose image** (Exit demo first if you want a real-mode upload, and narrate it accurately).
-   2. **Confirm restaurant**.
-   3. Enter **33.54**, then click **The extra $5.00 was tip** and **Confirm $33.54 paid**.
-   4. Claim: Sandwich 1 → Maya, Sandwich 2 → Jordan, Nuggets → Sam, Fries → **Share with everyone**, Drink 1 → Maya, Drink 2 → Sam.
-   5. **Review split** shows $22.52; open Jordan's **Show the math**, then **Copy reminder**, and paste it into a text editor.
-   6. Show the **Demo QR** and decode it with an independent scanner app.
-   7. **See how** (Points Rescue) shows the official links and the sample warning.
-4. Do not open the PayPal format example or any real payment link while recording.
+1. `cd splitcore && npm run preview -- --host 127.0.0.1`, then open **http://127.0.0.1:4173/** in a clean Chrome profile. Use DevTools device mode at 390×844 for a phone-sized take.
+2. Warm OCR: **Try a sample → Scan sample image** (Dinner for three), then **Reset demo**.
+3. Record:
+   1. Scan sample A; the scan beam runs over the real image, with real progress.
+   2. Point out the **Chick-fil-A One** rewards card ("Found 'Chick-fil-A' at the top of your receipt").
+   3. Enter **33.54**, then click **The extra $5.00 was tip** and **Confirm**.
+   4. Claim: Sandwich 1 → Maya, Sandwich 2 → Jordan, Nuggets → Sam, Fries → **Share with everyone**, Drink 1 → Maya, Drink 2 → Sam. The ring completes and the burst plays.
+   5. **Review split**: the $22.52 count-up and the donut.
+   6. On Jordan's card, **Show the math**, then **Copy reminder**, then **Demo QR**.
+   7. **Add this visit** shows the rewards dialog.
+   8. Optionally, go back to Snap → **Use sample text** on the pizza sample to show "No rewards program found", then **Undo**.
+4. Do not open real payment links, or sign up for rewards programs, on camera.

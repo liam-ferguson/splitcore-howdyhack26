@@ -22,7 +22,7 @@ export const SUMMARY_FIELDS = /** @type {const} */ ([
 
 export const FIELD_LABELS = {
   taxCents: 'Tax',
-  serviceCents: 'Service / gratuity',
+  serviceCents: 'Service & fees',
   includedTipCents: 'Printed tip',
   receiptTotalCents: 'Receipt total',
   printedSubtotalCents: 'Printed subtotal',
@@ -31,7 +31,10 @@ export const FIELD_LABELS = {
 /** Empty receipt used for manual entry and as the parser's base. */
 export function emptyReceipt() {
   return {
-    merchant: '', merchantConfirmed: false,
+    merchant: '', merchantEdited: false,
+    /** @type {string[]} */ headerLines: [],
+    /** @type {string[]} */ domains: [],
+    /** @type {null|'none'|string} */ rewardsChoice: null,
     dateText: '', timeText: '', storeNumber: '', orderNumber: '',
     /** @type {Item[]} */ items: [],
     /** @type {Discount[]} */ discounts: [],
@@ -96,18 +99,36 @@ const TIME_RE = /\b(\d{1,2}:\d{2}(?::\d{2})?(?:\s?[AP]M)?)\b/i;
 const STORE_RE = /^(?:STORE|RESTAURANT|REST|LOCATION|LOC)\b\s*(?:#|NO\.?|NUMBER)?\s*:?\s*([A-Z0-9][A-Z0-9-]*)$/i;
 const ORDER_RE = /^(?:ORDER|ORD|CHECK|CHK|TICKET)\b\s*(?:#|NO\.?|NUMBER)?\s*:?\s*([A-Z0-9][A-Z0-9-]*)$/i;
 const INFO_RE = /^(?:DATE|TIME|TABLE|SERVER|GUESTS?|CASHIER|REGISTER|TERMINAL|TRANS(?:ACTION)?|THANK|WWW|HTTPS?|TEL|PHONE)\b/i;
+const BOILERPLATE_RE = /^(?:WELCOME|THANK|THANKS|RECEIPT|CUSTOMER COPY|MERCHANT COPY|GUEST CHECK|DINE ?-?IN|TAKE ?-?OUT|TO ?GO|CARRY ?OUT|DRIVE ?-?THRU|DELIVERY|PICK ?UP|ORDER|TABLE|SERVER|CASHIER|DUPLICATE|REPRINT|COPY|SALE|INVOICE|BILL)\b/i;
+const DOMAIN_RE = /\b(?:https?:\/\/)?(?:[a-z0-9-]+\.)*([a-z0-9-]+\.(?:com|net|org|us|co))\b/gi;
+const HAS_DOMAIN = /\b[a-z0-9-]+\.(?:com|net|org|us|co)\b/i;
 
 const SUBTOTAL_RE = /^SUB\s*-?\s*TOTAL\b/;
 const TOTAL_RE = /^(?:(?:GRAND|TAKE\s?-?\s?OUT|DINE\s?-?\s?IN|ORDER|CHECK|BILL)\s+)?TOTAL(?:\s+(?:DUE|USD|AMOUNT))?$|^(?:AMOUNT|BALANCE|TOTAL)\s+DUE$/;
 const TAX_RE = /^(?:[A-Z]+\s+)?(?:SALES\s+)?TAX(?:ES)?\b/;
-const SERVICE_RE = /\b(?:SERVICE(?:\s+(?:CHARGE|FEE))?|(?:AUTO(?:MATIC)?\s+)?GRATUITY)\b/;
+const SERVICE_RE = /^(?:\d+%\s+|AUTO(?:MATIC)?\s+|INCLUDED\s+)?(?:SERVICE(?:\s+(?:CHARGE|FEE))?|GRATUITY)\b|^(?:DELIVERY|CONVENIENCE|BAG|SMALL ORDER|ONLINE ORDER|PACKAGING|PLATFORM|KITCHEN|HEALTH|LIVING WAGE|CREDIT CARD|CARD)\s+(?:FEE|CHARGE|SURCHARGE)S?\b|^(?:SURCHARGE|FEES?)$/;
 const TIP_RE = /^(?:ADDED\s+)?TIPS?(?:\s+AMOUNT)?$/;
-const NONCHARGE_RE = /^(?:CASH|CHANGE|TENDER(?:ED)?|AMOUNT TENDERED|AMT TENDERED|VISA|MASTER\s?CARD|MC|AMEX|AMERICAN EXPRESS|DISCOVER|CREDIT|DEBIT|CARD|AUTH\w*|APPROV\w*|PAYMENT|PAID|GIFT CARD)\b|SUGGEST|%|\bRATE\b/;
+const NONCHARGE_RE = /^(?:CASH|CHANGE|TENDER(?:ED)?|AMOUNT TENDERED|AMT TENDERED|VISA|MASTER\s?CARD|MC|AMEX|AMERICAN EXPRESS|DISCOVER|CREDIT|DEBIT|CARD|AUTH\w*|APPROV\w*|PAYMENT|PAID|GIFT CARD|(?:AMOUNT|TOTAL)\s+PAID|ROUNDING|(?:APPLE|GOOGLE|SAMSUNG)\s+PAY|BALANCE(?!\s+DUE))\b|SUGGEST|%|\bRATE\b/;
 const DISCOUNT_RE = /\b(?:DISCOUNT|DISC|COUPON|PROMO|PROMOTION|SAVINGS|SAVED|SAVE|OFF|COMP|REWARD)\b/;
 
 /** Uppercase, collapse to letters/digits/spaces for label matching. */
 function key(label) {
   return label.toUpperCase().replace(/[^A-Z0-9%#@]+/g, ' ').trim();
+}
+
+/** Does a header line look like a business name rather than an address, phone or boilerplate? */
+function merchantCandidate(line) {
+  const s = line.replace(/^WELCOME\s+TO\s+/i, '').replace(/[*=~_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const letters = (s.match(/[A-Za-z]/g) || []).length;
+  const visible = s.replace(/\s/g, '').length;
+  if (letters < 3 || letters / Math.max(1, visible) < 0.6) return null;
+  if (/^WELCOME\b/i.test(line) && s === line.trim()) return null;
+  if (BOILERPLATE_RE.test(s) || INFO_RE.test(s)) return null;
+  if (/^\d+\s+\S/.test(s)) return null; // street address
+  if (/\d{3}[-. )]\s?\d{3}[-. ]\d{4}/.test(s)) return null; // phone
+  if (/,\s*[A-Z]{2}\s+\d{5}/.test(s) || /\b\d{5}(?:-\d{4})?$/.test(s)) return null; // city, ST 77840
+  if (/\d[.,]\d/.test(s)) return null;
+  return s.slice(0, 60);
 }
 
 /**
@@ -125,9 +146,14 @@ export function parseReceipt(text) {
   const discountLines = [];
   let sawMoney = false, seenTotal = false, sawItem = false;
 
-  const unknown = (line, message, cents = null, name = '') => {
-    r.issues.push({ id: nextIssue(), code: 'unknown-line', severity: 'blocking', line, message, cents, name });
+  const unknown = (line, message, cents = null, name = '', severity = 'blocking') => {
+    r.issues.push({ id: nextIssue(), code: 'unknown-line', severity, line, message, cents, name });
   };
+
+  // Websites printed anywhere (header or footer) are strong restaurant evidence.
+  const domains = new Set();
+  for (const line of lines) for (const m of line.matchAll(DOMAIN_RE)) domains.add(m[1].toLowerCase());
+  r.domains = [...domains].slice(0, 6);
 
   for (const line of lines) {
     if (DISCLAIMER_RE.test(line)) { r.sampleDisclaimer = true; continue; }
@@ -145,12 +171,16 @@ export function parseReceipt(text) {
       if (store) { if (!r.storeNumber) r.storeNumber = store[1]; meta = true; }
       const order = ORDER_RE.exec(line);
       if (order) { if (!r.orderNumber) r.orderNumber = order[1]; meta = true; }
-      if (meta || date || INFO_RE.test(line)) continue;
+      if (meta || date) continue;
 
-      if (!sawMoney && !r.merchant && /[A-Za-z].*[A-Za-z]/.test(line) && !/\d[.,]\d/.test(line)) {
-        r.merchant = line.slice(0, 60);
-        continue;
+      if (!sawMoney) {
+        if (r.headerLines.length < 8) r.headerLines.push(line.slice(0, 80));
+        if (!r.merchant) {
+          const name = merchantCandidate(line);
+          if (name) { r.merchant = name; continue; }
+        }
       }
+      if (INFO_RE.test(line)) continue;
       const k = key(line);
       const withoutRates = upper.replace(/\d+(?:\.\d+)?\s*%/g, '');
       if (NONCHARGE_RE.test(k)) continue;
@@ -158,11 +188,11 @@ export function parseReceipt(text) {
         TAX_RE.test(k) || SERVICE_RE.test(k) || /^TIPS?\b/.test(k);
       const moneyLooking = /\d[.,]\d{1,3}\b/.test(withoutRates) || /\$\s?\d/.test(withoutRates) ||
         ((sawItem || summaryLabel) && /[A-Za-z]/.test(line) && /\s\d{3,6}-?$/.test(withoutRates));
-      if (moneyLooking && /[A-Za-z]/.test(line)) {
+      if (moneyLooking && /[A-Za-z]/.test(line) && !HAS_DOMAIN.test(line)) {
         unknown(line, summaryLabel
-          ? 'This summary line has an amount we could not read. Enter it below.'
-          : "Couldn't read a price on this line. Add it as an item or ignore it.",
-          null, line.replace(/[\d.,$\s-]+$/, '').trim());
+          ? 'This summary line has an amount we could not read. Enter it in the bill details.'
+          : "Couldn't read a price on this line. Add it as an item or exclude it.",
+          null, line.replace(/[\d.,$\s-]+$/, '').trim(), seenTotal ? 'info' : 'blocking');
       }
       continue;
     }
@@ -179,6 +209,7 @@ export function parseReceipt(text) {
     if (TIP_RE.test(k)) { summary.includedTipCents.push({ label, cents, line }); continue; }
     if (NONCHARGE_RE.test(k)) continue; // tender, change, card, suggested tip, rates
     if (DISCOUNT_RE.test(k) || negative) {
+      if (cents === 0) continue; // a $0.00 promo line changes nothing
       if (seenTotal) {
         r.issues.push({ id: nextIssue(), code: 'after-total-saving', severity: 'info', line,
           message: 'A savings line after the total was not applied. The printed total already reflects it.' });
@@ -187,7 +218,11 @@ export function parseReceipt(text) {
       discountLines.push({ label, cents, negative, line });
       continue;
     }
-    if (seenTotal) { unknown(line, 'A priced line appears after the total. Add it as an item or ignore it.', cents, label); continue; }
+    if (seenTotal) {
+      // Lines after the total are almost always payment details; keep them visible but non-blocking.
+      unknown(line, 'A priced line after the total was not counted. Add it as an item only if it’s food.', cents, label, 'info');
+      continue;
+    }
     if (!/[A-Za-z]/.test(label)) { unknown(line, 'This price has no item name.', cents, ''); continue; }
     if (STRICT_ANYWHERE.test(label.replace(/@\s*\$?\d+\.\d{2}$/, ''))) {
       unknown(line, 'Several prices on one line (multi-column layout). Add each item separately.', null, '');
@@ -200,27 +235,37 @@ export function parseReceipt(text) {
     r.items.push({ id: `i${++itemSeq}`, order: r.items.length, sourceLine: line, grossCents: cents, ...item });
   }
 
-  // Summary fields: one value is taken; conflicting repeats need a decision.
+  // Summary fields. Distinct labelled tax or fee lines (STATE TAX + CITY TAX, DELIVERY FEE +
+  // SERVICE FEE) are separate charges and are added, with a visible note. Repeats of the same
+  // label, or conflicting totals and subtotals, need a decision.
   for (const field of SUMMARY_FIELDS) {
     const found = summary[field];
     if (!found.length) continue;
     if (field === 'taxCents') r.listed.tax = true;
     if (field === 'serviceCents') r.listed.service = true;
     if (field === 'includedTipCents') r.listed.tip = true;
-    const distinct = [...new Set(found.map(f => f.cents))];
-    r[field] = found[0].cents;
     if (field === 'receiptTotalCents') r.totalSource = 'ocr';
-    if (distinct.length > 1 || (found.length > 1 && field !== 'receiptTotalCents' && field !== 'printedSubtotalCents')) {
-      const candidates = found.map(f => ({ label: `${f.label} ${formatMoney(f.cents)}`, cents: f.cents }));
-      if (field !== 'receiptTotalCents' && field !== 'printedSubtotalCents') {
-        const sum = found.reduce((s, f) => s + f.cents, 0);
-        if (sum <= MAX_CENTS) candidates.push({ label: `Add them: ${formatMoney(sum)}`, cents: sum });
-      }
-      r.issues.push({ id: nextIssue(), code: 'duplicate-field', severity: 'blocking', field,
-        line: found.map(f => f.line).join(' / '),
-        message: `Several ${FIELD_LABELS[field].toLowerCase()} lines were found. Choose the right amount.`,
-        candidates });
+    const distinctValues = new Set(found.map(f => f.cents));
+    const distinctLabels = new Set(found.map(f => key(f.label)));
+    const summable = field === 'taxCents' || field === 'serviceCents';
+    if (found.length === 1 || (!summable && distinctValues.size === 1)) {
+      r[field] = found[0].cents;
+      continue;
     }
+    const sum = found.reduce((s, f) => s + f.cents, 0);
+    if (summable && distinctLabels.size === found.length && sum <= MAX_CENTS) {
+      r[field] = sum;
+      r.issues.push({ id: nextIssue(), code: 'summed-lines', severity: 'info', field,
+        message: `Added ${found.map(f => `${f.label} ${formatMoney(f.cents)}`).join(' + ')} = ${formatMoney(sum)} as ${FIELD_LABELS[field].toLowerCase()}.` });
+      continue;
+    }
+    r[field] = found[0].cents;
+    const candidates = found.map(f => ({ label: `${f.label} ${formatMoney(f.cents)}`, cents: f.cents }));
+    if (summable && sum <= MAX_CENTS) candidates.push({ label: `Add them: ${formatMoney(sum)}`, cents: sum });
+    r.issues.push({ id: nextIssue(), code: 'duplicate-field', severity: 'blocking', field,
+      line: found.map(f => f.line).join(' / '),
+      message: `Several ${FIELD_LABELS[field].toLowerCase()} lines were found. Choose the right amount.`,
+      candidates });
   }
 
   // Discount scope: exact unique item-name target, explicit bill label, otherwise unresolved.
@@ -238,6 +283,8 @@ export function parseReceipt(text) {
       r.discounts.push({ ...base, scope: 'unresolved', itemId: null });
     }
   }
+  // Give issue fields stable ids for focus targets.
+  for (const i of r.issues) if (i.code === 'unknown-line') i.field = `issue:${i.id}`;
   return r;
 }
 
@@ -262,7 +309,7 @@ export function parseItemLabel(label, extended) {
   } else if ((m = /^(\d{1,3})\s+(.+)$/.exec(label))) {
     quantity = Number(m[1]); name = m[2];
   }
-  name = name.replace(/[.\s]+$/, '').trim();
+  name = name.replace(/^[+*•·>-]+\s*/, '').replace(/[.\s]+$/, '').trim();
   if (!/[A-Za-z]/.test(name)) return null;
   if (quantity < 1 || quantity > 20) {
     needsReview = true;
@@ -322,7 +369,7 @@ export function validateReceipt(r) {
   }
   if (!r.items.length) {
     issues.push({ id: 'no-items', code: 'no-items', severity: 'blocking', field: 'items',
-      message: 'No items found yet. Add the items from the receipt.' });
+      message: 'No items yet. Add the items from the receipt.' });
   }
 
   const T = r.taxCents, S = r.serviceCents, P = r.includedTipCents;

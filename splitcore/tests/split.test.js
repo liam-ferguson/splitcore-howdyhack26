@@ -197,6 +197,37 @@ test('zero-owner unit blocks final requests and shows provisional food only', ()
   assert.equal(res.people, undefined);
 });
 
+test('$0.00 units are optional to claim and never block', () => {
+  const s = setup('CAFE\nBURGER 8.00\nWATER 0.00\nTOTAL 8.00', ['Maya', 'Jordan']);
+  s.claim(0, 0, 'Jordan');
+  s.pay(800);
+  const res = allocateBill(s.b);
+  assert.equal(res.ready, true, JSON.stringify(res.blockers));
+  assert.equal(res.requiredUnits, 1);
+  assert.deepEqual(table(res, 'totalCents'), { Maya: 0, Jordan: 800 });
+});
+
+test('a draft with an orphaned item discount restores with the same blocking issue', () => {
+  const s = setup(SAMPLE_B);
+  s.run({ type: 'DELETE_ITEM', id: s.b.receipt.items[0].id });
+  const back = fromDraft(JSON.parse(JSON.stringify(toDraft(s.b))));
+  assert.ok(back, 'draft restores');
+  assert.ok(allocateBill(back).blockers.some(b => b.code === 'discount-target'));
+});
+
+test('editing the merchant re-runs detection and clears a manual rewards choice', () => {
+  const s = setup(SAMPLE_A);
+  s.run({ type: 'SET_REWARDS_CHOICE', choice: 'none' });
+  assert.equal(s.b.receipt.rewardsChoice, 'none');
+  s.run({ type: 'SET_MERCHANT', merchant: 'Pizza Hut' });
+  assert.equal(s.b.receipt.rewardsChoice, null);
+  assert.equal(s.b.receipt.merchantEdited, true);
+  const loadA = s.b.source.loadId;
+  s.run({ type: 'LOAD_RECEIPT', receipt: parseReceipt(SAMPLE_B), kind: 'text' });
+  assert.equal(s.b.source.loadId, loadA + 1);
+  assert.equal(s.b.receipt.merchantEdited, false);
+});
+
 test('final paid below receipt requires correction', () => {
   const s = setup(SAMPLE_C);
   s.claim(0, 0, 'Maya');
