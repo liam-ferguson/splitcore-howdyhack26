@@ -7,12 +7,12 @@ One person has already paid for the table. They photograph the receipt, add who 
 **Snap → Claim → Settle.**
 
 - **Snap**: drag and drop a photo, take one, choose an image, paste an image (Ctrl+V), paste receipt text, or enter the bill by hand. OCR runs locally in a Web Worker (Tesseract.js). While it reads, the real image is shown with the engine's actual stage and progress, and you can cancel.
-- **Claim**: the recognized items appear immediately, with a receipt header and a rewards card.
-  - **CoreCheck** confirms that items, discounts, tax, service and fees, and printed tip add up to the receipt total. When they don't, it points you to the line that needs fixing.
-  - Enter the final amount you paid. If it's more than the receipt, you mark the difference as extra tip yourself.
-  - Add people; each one gets a color. Tap colored chips onto each unit: a 2-sandwich line becomes two units, and a unit can be shared by several people.
-  - A progress ring, a split bar and live per-person totals update as you go.
-- **Settle**: an animated hero shows how much the payer gets back, with a donut chart of everyone's share. Each other person gets a request card with the full arithmetic, a Copy reminder button, Share, a QR code, and an optional PayPal.Me link or Venmo/Cash App handoff.
+- **Claim (nothing required)**: every total is filled in from the receipt automatically.
+  - Tap **How many people? 2 3 4 5 6**, or add names. The split is ready immediately: anything you don't tap is split evenly.
+  - Optional: tap people onto items one person had, so a 2-sandwich line becomes two units and a unit can be shared. You can also **Add a tip** (with 15/18/20% buttons); the paid amount is the receipt total plus that tip.
+  - The printed total always wins. If some lines couldn't be read, the small difference is shared fairly and shown in each person's math as "Receipt adjustment". Duplicate totals and unclear coupons are resolved automatically.
+  - All the details stay available under **Receipt details**.
+- **Settle**: an animated hero shows how much the payer gets back, with a donut chart of everyone's share. Add your PayPal, Venmo or Cash App once (and optionally remember it on this device). Each person then gets a **Pay $X** button and a **Pay QR** with their exact amount, plus a copyable request message and the full math.
 - Loading a new receipt replaces the current bill immediately, with an **Undo** toast.
 
 No backend, accounts, API keys, payment processing or cloud OCR.
@@ -104,8 +104,11 @@ SplitCore **prepares** requests. It never sends or processes them, and it has no
 | Method | What SplitCore does |
 |---|---|
 | None | Amount, itemized breakdown, Copy/Share |
-| PayPal.Me | `https://paypal.me/{name}/{amount}USD`, using the documented format. The name is checked for format only, not for whether the account exists or who owns it. |
-| Venmo / Cash App | Copy username or $cashtag plus the amount. Optionally opens your own profile link, unchanged, but only on `venmo.com`/`account.venmo.com` or `cash.app` over HTTPS. SplitCore never adds an amount or builds a deep link. |
+| PayPal.Me | `https://paypal.me/{name}/{amount}USD`, which opens PayPal.Me with the amount filled in (checked live on October 24, 2026). |
+| Venmo | `https://venmo.com/{user}?txn=pay&amount={amount}&note=…`, which redirects to Venmo's own payment-link page with the recipient, amount and note filled in (checked live). In the Venmo app it opens the pay screen. |
+| Cash App | `https://cash.app/$cashtag`, Cash App's documented payment link. An amount in the URL isn't documented, so the card shows the amount to type. |
+
+Handles are checked for format only; SplitCore can't confirm who owns an account. The person paying always reviews and confirms inside their own app. Each **Pay QR** encodes the same pay link, so a friend can scan it to pay. In demo mode, with no handle entered, the QR holds a text breakdown instead.
 
 QR codes are generated locally. Copy confirms success only after the clipboard write succeeds; if the clipboard is blocked, the text is shown selected so you can copy it manually.
 
