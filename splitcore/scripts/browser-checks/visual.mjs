@@ -21,7 +21,7 @@ for (const [w, h, label] of [[390, 844, 'mobile'], [320, 700, 'narrow320'], [640
     for (const n of [LONG, 'Jo', 'Sam', 'Priya']) { await page.type('#f-add-diner', n); await page.click('Add', '.add-diner'); }
     await page.eval(`[...document.querySelectorAll('[role=group]')].forEach(g=>g.querySelector('button').click())`);
     await sleep(100);
-    await page.click('Same as receipt'); await page.click('Confirm');
+
     check(`${label}: Claim no horizontal scroll`, (await overflow()) <= 0, `${await overflow()}px`);
     await sleep(1300); // let entrance animations (which scale cards) finish before measuring geometry
     const chip = await page.eval(`const b=document.querySelector('.chip'); return {aria: b.innerText, h: b.getBoundingClientRect().height}`);
@@ -33,13 +33,13 @@ for (const [w, h, label] of [[390, 844, 'mobile'], [320, 700, 'narrow320'], [640
       const gap = await page.eval(`const d=document.querySelector('.dock').getBoundingClientRect().top; const items=[...document.querySelectorAll('main .main-col > *')]; const last=items[items.length-1].getBoundingClientRect().bottom; return d - last`);
       check(`${label}: dock never covers last content`, gap >= 0, `${gap}px clearance`);
       // Focused field is not hidden by dock
-      await page.eval(`document.getElementById('f-paid').focus(); document.getElementById('f-paid').scrollIntoView({block:'center'})`); await sleep(100);
-      const cover = await page.eval(`const d=document.querySelector('.dock').getBoundingClientRect().top; return d - document.getElementById('f-paid').getBoundingClientRect().bottom`);
-      check(`${label}: focused paid field above dock`, cover > 0, `${cover}px`);
+      await page.eval(`document.getElementById('f-add-diner').focus(); document.getElementById('f-add-diner').scrollIntoView({block:'center'})`); await sleep(100);
+      const cover = await page.eval(`const d=document.querySelector('.dock').getBoundingClientRect().top; return d - document.getElementById('f-add-diner').getBoundingClientRect().bottom`);
+      check(`${label}: focused field above dock`, cover > 0, `${cover}px`);
       await page.shot(`${S}/v-${label}-claim-bottom.png`);
     }
     await page.eval(`window.scrollTo(0,0)`);
-    await page.click('Review split'); await sleep(200);
+    await page.click('Send requests'); await sleep(200);
     check(`${label}: Settle no horizontal scroll`, (await overflow()) <= 0, `${await overflow()}px`);
     await page.shot(`${S}/v-${label}-settle.png`);
     if (label === 'mobile') {

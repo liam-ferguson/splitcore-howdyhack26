@@ -49,18 +49,35 @@ Last updated: October 25, 2026 (~00:10 CDT), by Claude Code. Read this first, th
 - `npm run build`: passes.
 - `node scripts/browser-checks/photo-ocr.mjs`: **5/6** photo-like receipts read exactly, including the comma-decimal café. Generate the receipts first with `python -I scripts/make-photo-fixtures.py`. The failure is `cafe-comma-hard`, an extreme blur where commas and digits are destroyed. The app still splits it with a total derived from the items.
 
+### Browser checks updated and passing
+
+The scripts below were run against the production preview:
+
+- `interactions.mjs` — **66/66**, rewritten for the seamless flow. It covers:
+  - ready with no taps
+  - the tip field and quick-tip chips
+  - a non-blocking mismatch
+  - the pizza-vs-Chick-fil-A regression and Undo
+  - the picker and join links
+  - clipboard copy and its fallback
+  - the demo QR, decoded with jsQR
+  - PayPal and Venmo link strings, and invalid handles never becoming links
+  - cancel and reset during OCR
+  - bad inputs
+  - keyboard use and storage
+- `visual.mjs` — **27/27**: 320/390/640/1440 px layouts and reduced motion.
+- `pay-links.mjs` — **4/4**. The app's own Pay buttons were opened in Chrome:
+  - PayPal.Me lands on `paypal.com/paypalme/PayPal/4.87USD`.
+  - Venmo lands on `account.venmo.com/payment-link?amount=4.87&…&recipients=Venmo`.
+
+  These are public page loads only; no login or payment.
+- `tour.mjs` — screenshots of the new Claim ("Your split is ready", $19.01 to get back with no taps) and Settle (per-person colored "Pay $X on Venmo" buttons) at 390 px were reviewed by eye.
+
 ## NOT yet done / next steps
 
-1. **Rewrite `scripts/browser-checks/interactions.mjs`** for the new UI. It still expects the old blocking flow (paid confirmation, "The extra $5.00 was tip", "Needs owner", Points Rescue blocking). `visual.mjs` and `tour.mjs` also click old labels ("Confirm", "Same as receipt"). New labels:
-   - "Send requests"
-   - "Add a tip"
-   - "Receipt details"
-   - quick-people buttons with `aria-label="3 people"`
-   - pay link `.pay-link-btn`
-   - "Pay QR"
-2. Take screenshots (`tour.mjs`) at 390 px and 1440 px and review the new Claim and Settle layouts by eye.
-3. Update `README.md` and `VERIFICATION.md` to the new flow; both still describe confirmations and blocking checks.
-4. Optional: try the multi-pass scorer with a fourth pass (PSM 11 sparse text) for column-split receipts.
+1. Update `VERIFICATION.md`. It still describes the older confirm-and-fix flow; `HANDOFF.md` is the current source of truth.
+2. Optional: add a fourth OCR pass (PSM 11 sparse text) for column-split receipts. `cafe-comma-hard` (extreme blur) still fails.
+3. Optional: real phone-camera test of a printed receipt. It's still pending, as are a phone QR scan and a Cash App live open.
 5. Remote note: `origin` still points at the old URL `liam-ferguson/hackathon`, which GitHub redirects to `liam-ferguson/splitcore-howdyhack26`. Pushes work.
 
 ## Commands
